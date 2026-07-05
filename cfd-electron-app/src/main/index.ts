@@ -1,7 +1,7 @@
 /**
  * Electron main process entry — bootstraps the window and registers IPC.
  */
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell, type MenuItemConstructorOptions } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerIpc } from './ipc/index.js';
@@ -51,6 +51,7 @@ function createWindow() {
 app.whenReady().then(() => {
   registerIpc(() => mainWindow);
   createWindow();
+  setApplicationMenu();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -65,3 +66,83 @@ app.on('window-all-closed', () => {
 app.on('web-contents-created', (_event, contents) => {
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));
 });
+
+/**
+ * V1.32 — install the standard platform-aware application menu.
+ *
+ * macOS expects an app-menu (About / Services / Hide / Quit) as the
+ * leftmost submenu; Linux / Windows don't render the slot. The Edit /
+ * View / Window submenus use the cross-platform Electron default
+ * roles so the same template ships on every OS without per-platform
+ * re-arrangement beyond the standard homeEnd / pasteAndMatchStyle /
+ * `Window > front` extras that macOS conventions add.
+ *
+ * Called inside `app.whenReady()` so the Menu API is fully wired up.
+ */
+function setApplicationMenu() {
+  const isMac = process.platform === 'darwin';
+
+  const editExtras: MenuItemConstructorOptions[] = isMac
+    ? [{ role: 'pasteAndMatchStyle' }, { role: 'delete' }, { role: 'selectAll' }]
+    : [{ role: 'delete' }, { type: 'separator' }, { role: 'selectAll' }];
+
+  const windowExtras: MenuItemConstructorOptions[] = isMac
+    ? [{ type: 'separator' }, { role: 'front' }, { type: 'separator' }, { role: 'window' }]
+    : [{ role: 'close' }];
+
+  // Mac-only app-menu submenu (About / Services / Hide / Quit). Hoisted
+  // into a named typed array for symmetry with editExtras/windowExtras.
+  const appMenuSubmenu: MenuItemConstructorOptions[] = [
+    { role: 'about' },
+    { type: 'separator' },
+    { role: 'services' },
+    { type: 'separator' },
+    { role: 'hide' },
+    { role: 'hideOthers' },
+    { role: 'unhide' },
+    { type: 'separator' },
+    { role: 'quit' },
+  ];
+
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [{ label: app.name, submenu: appMenuSubmenu }]
+      : []),
+    {
+      label: 'File',
+      submenu: [isMac ? { role: 'close' } : { role: 'quit' }],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        ...editExtras,
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...windowExtras],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}

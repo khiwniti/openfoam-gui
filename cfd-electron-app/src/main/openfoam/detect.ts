@@ -33,6 +33,65 @@ const CANDIDATE_VERSION_DIRS = [
   '/opt/OpenFOAM',
 ];
 
+/**
+ * V1.32 — macOS OpenFOAM detection paths.
+ *
+ * OpenFOAM Foundation / ESI do not ship native macOS binaries; the
+ * usual install vectors are:
+ *   • Homebrew (`brew install openfoam`) -- provides either the
+ *     `/opt/homebrew/...` layout (Apple Silicon) or `/usr/local/...`
+ *     (Intel). Both the opt-link and the versioned Cellar subdirs
+ *     are probed.
+ *   • Manual source build dropped into `$HOME/OpenFOAM/<user>-vXXX/`
+ *     (the existing `$HOME/OpenFOAM/<name>/etc/bashrc` scan in
+ *     `detectOpenfoam` covers this case).
+ *   • `/opt/OpenFOAM/OpenFOAM-vXXXX/etc/bashrc` (a copy of the
+ *     Linux layout -- works on macOS too if the user installed by
+ *     hand).
+ *
+ * Docker-on-macOS workflows are intentionally NOT handled here:
+ * they need a separate "run in container" driver that does not
+ * source a bashrc on the host filesystem, which means a larger
+ * rerouting of runner.ts. Out of scope for V1.32.
+ *
+ * The helper takes `platform` as a defaulted parameter so callers
+ * (and tests) can exercise each branch explicitly without mocking
+ * `process.platform` -- the runtime caller relies on the default
+ * `process.platform` value.
+ */
+export async function getCandidateBashrcPaths(
+  platform: NodeJS.Platform = process.platform,
+): Promise<string[]> {
+  const out: string[] = [...CANDIDATE_BASHRC_PATHS];
+  if (platform === 'darwin') {
+    // Stable opt-link (one symlink per formula, points at the default
+    // version). Apple Silicon and Intel are mutually exclusive on any
+    // given machine, so pushing both is safe and cheap.
+    out.unshift(
+      '/opt/homebrew/opt/openfoam/etc/bashrc',   // Apple Silicon
+      '/usr/local/opt/openfoam/etc/bashrc',       // Intel
+    );
+    // Cellar versioned installs -- Homebrew keeps every formerly
+    // installed version on disk by default, so the opt-link alone may
+    // miss a pinned / unpinned-to-older version the user expects.
+    for (const cellar of [
+      '/opt/homebrew/Cellar/openfoam',
+      '/usr/local/Cellar/openfoam',
+    ]) {
+      try {
+        const versions = await fs.readdir(cellar);
+        for (const v of versions) {
+          if (v.startsWith('.')) continue; // skip . and .. and any .DS_Store
+          out.push(path.join(cellar, v, 'etc', 'bashrc'));
+        }
+      } catch {
+        // Homebrew root or formula not present -- carry on silently.
+      }
+    }
+  }
+  return out;
+}
+
 async function fileExists(p: string): Promise<boolean> {
   try { await fs.access(p); return true; } catch { return false; }
 }
@@ -95,7 +154,14 @@ export async function detectOpenfoam(): Promise<OpenfoamDetected> {
     /* ignore */
   }
 
-  for (const candidate of [...CANDIDATE_BASHRC_PATHS, ...CANDIDATE_VERSION_DIRS.map((d) => `${d}/etc/bashrc`)]) {
+  // V1.32 -- `getCandidateBashrcPaths` adds the macOS Homebrew
+  //  routes (Apple Silicon opt-link + Intel opt-link + the
+  //  versioned Cellar glob) on `platform === 'darwin'`; on every
+  //  other platform the result is identical to the previously-
+  //  iterated `CANDIDATE_BASHRC_PATHS` constant. Linux / WSL /
+  //  manual-install paths are unchanged.
+  const platformCandidates = await getCandidateBashrcPaths();
+  for (const candidate of [...platformCandidates, ...CANDIDATE_VERSION_DIRS.map((d) => `${d}/etc/bashrc`)]) {
     if (await fileExists(candidate)) {
       const detected = await probeBashrc(candidate);
       if (detected) return detected;
@@ -107,7 +173,16 @@ export async function detectOpenfoam(): Promise<OpenfoamDetected> {
     installHints: [
       'OpenFOAM was not detected on this system.',
       'Install OpenFOAM (https://www.openfoam.com or https://openfoam.org) or set a custom bashrc path in Settings.',
-      'Common path: /opt/openfoam/etc/bashrc (apt) or /opt/OpenFOAM/OpenFOAM-v2412/etc/bashrc (source build)',
+      'Common path: /opt/openfoam/etc/bashrc (apt) or /opt/OpenFOAM/OpenFOAM-v2412/etc/bashrc (source build).',
+      // V1.32 -- macOS-specific guidance appended only on darwin so
+      //  Linux / Windows users don't see suggestions they can't act
+      //  on. The first two lines remain platform-agnostic.
+      ...(process.platform === 'darwin'
+        ? [
+            'On macOS: `brew install openfoam` (provides /opt/homebrew/opt/openfoam/etc/bashrc on Apple Silicon or /usr/local/opt/openfoam/etc/bashrc on Intel).',
+            'Alternatively: build from source into $HOME/OpenFOAM/<user>-vXXX/etc/bashrc.',
+          ]
+        : []),
     ],
   };
 }
