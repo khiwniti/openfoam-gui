@@ -19,6 +19,14 @@ import {
   Domain,
   PatchRefinementSchema,
   RunResultSchema,
+  // V1.31a — extracted from the previously-inline IPC envelope so
+  //  tests can import + parse the schema directly without pulling in
+  //  electron (used only by the IPC handler). See docstring on
+  //  RunStartConvergenceSchema in @shared/types for the design
+  //  rationale (wire-format differs from
+  //  SolverControlsSchema.shape.converge in `.default()` and
+  //  `.int().positive()` vs `.int().min(1)`).
+  RunStartEnvelopeSchema,
   type OpenfoamDetected,
   type RunLogEvent,
   type RunPhaseEvent,
@@ -178,30 +186,16 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.runStart,
     async (_evt, args: unknown) => {
-      const input = z
-        .object({
-          /** Renderer-allocated runId so events from this run can be filtered
-           *  deterministically by the renderer regardless of IPC ordering. */
-          runId: z.string().min(1),
-          caseDir: z.string(),
-          bashrc: z.string(),
-          cores: z.number().int().min(1).max(64),
-          solver: z.string(),
-          /** V1.8 — convergence detector settings, sourced from
-           *  `state.solverControlsBySolver[formSolver].converge`. Optional
-           *  to stay back-compat with the pre-V1.8 renderer payload
-           *  shape; undefined is treated as "detector disabled"
-           *  downstream. Forwarded through to startRun via RunOptions. */
-          convergence: z
-            .object({
-              enabled: z.boolean(),
-              maxInitialResidual: z.number().positive(),
-              stableIterations: z.number().int().positive(),
-              autoStop: z.boolean(),
-            })
-            .optional(),
-        })
-        .parse(args);
+      // V1.31a — wire-format envelope extracted to @shared/types as
+      //  RunStartEnvelopeSchema for unit-testability (vitest node env
+      //  can't import electron). Behavior is identical to the
+      //  previously-inline schema: non-strict `.object()`, so
+      //  unknown keys (e.g., the V1.30 first-pass `converge:` bug)
+      //  silently strip and `convergence` comes back undefined. The
+      //  regression-net test in
+      //  src/shared/__tests__/run-payload-schemas.test.ts pins both
+      //  sides of that bug-at-parse-time vs bug-at-runtime semantics.
+      const input = RunStartEnvelopeSchema.parse(args);
       // Probe the on-disk state file to learn whether this is a snappy (imported)
       // case or a parametric one, so we can route the pipeline correctly.
       const state = await loadCaseState(input.caseDir).catch(() => null);

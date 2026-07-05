@@ -1755,3 +1755,68 @@ export const IpcChannels = {
   geometryCaseList: 'cfd:geometry:caseList',
 } as const;
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];
+
+/**
+ * V1.31a — wire-format shape for the `runStart` IPC main handler's
+ *  optional `convergence:` sub-object. Extracted from the inline
+ *  `z.object({...}).optional()` in `src/main/ipc/index.ts`'s runStart
+ *  handler so the renderer/main contract is testable without pulling
+ *  Electron into the vitest node env (the IPC handler imports
+ *  `electron`'s `ipcMain`, which is unavailable in unit-test contexts).
+ *
+ *  Differences from `SolverControlsSchema.shape.converge` are
+ *  deliberate and locked by a shape-parity test (see
+ *  `run-payload-schemas.test.ts`):
+ *  - **no `.default(...)` calls** — the wire only carries what the
+ *    renderer actually sent; missing-key is `undefined`, treated as
+ *    "detector disabled" by the runner pre-V1.8.
+ *  - **`stableIterations` is `.int().positive()`** — rejects 0 and
+ *    negative reals. `SolverControlsSchema.converge` uses
+ *    `.int().min(1)`, which has the same rejection set on integers;
+ *    slight syntax difference, same semantic. The drift-detector
+ *    test parses identical canonical input through both schemes and
+ *    asserts `toEqual` so a future divergence (e.g., setting a
+ *    different positive bound) fails immediately.
+ *  - **strict-mode-by-convention**: this schema doesn't include
+ *    `.strict()` because the parent `z.object({...})` in main/ipc/index.ts
+ *    isn't strict either — extra unknown keys (e.g., the V1.30
+ *    first-pass `converge:` typo) silently strip and `convergence`
+ *    resolves to `undefined`. That's the actual V1.30 bug and the
+ *    regression-net test pins it: send-with-wrong-key yields
+ *    `convergence: undefined`, send-with-right-key yields the parsed
+ *    object.
+ */
+export const RunStartConvergenceSchema = z.object({
+  enabled: z.boolean(),
+  maxInitialResidual: z.number().positive(),
+  stableIterations: z.number().int().positive(),
+  autoStop: z.boolean(),
+});
+export type RunStartConvergence = z.infer<typeof RunStartConvergenceSchema>;
+
+/**
+ * V1.31a — full wire-format envelope for the `runStart` IPC handler
+ *  in `src/main/ipc/index.ts`. Mirrors the inline parse shape so the
+ *  V.0 keystroke + V1.30 first-pass-bug regression test can run
+ *  without importing the IPC handler's electron dependency. Behavior
+ *  matches `z.object({...}).parse(args)` on the main side verbatim —
+ *  the parser is non-strict, so unknown keys (e.g., the V1.30
+ *  `converge:` typo) silently strip rather than throw, leaving the
+ *  detector config stranded on the wire. The regression test pins
+ *  this behavior so a future `.strict()` migration (intentional or
+ *  accidental) gets caught before it ships.
+ */
+export const RunStartEnvelopeSchema = z.object({
+  /** Renderer-allocated runId so events from this run can be
+   *  filtered deterministically by the renderer regardless of IPC
+   *  ordering. */
+  runId: z.string().min(1),
+  caseDir: z.string(),
+  bashrc: z.string(),
+  cores: z.number().int().min(1).max(64),
+  solver: z.string(),
+  /** V1.8 — convergence detector settings. Optional; undefined
+   *  disables the detector downstream. */
+  convergence: RunStartConvergenceSchema.optional(),
+});
+export type RunStartEnvelope = z.infer<typeof RunStartEnvelopeSchema>;

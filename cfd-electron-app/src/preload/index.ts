@@ -14,6 +14,13 @@ import type {
   RunLogEvent,
   RunPhaseEvent,
   RunResidualEvent,
+  // V1.31a — widen `api.run.start` params to include the convergence
+  //  detector payload, mirroring `src/renderer/src/cfd-api.ts`'s
+  //  CfdApi surface. Type drift was: preload's TS type omitted
+  //  convergence while cfd-api's advertised it. Runtime is unaffected
+  //  (Electron's structured clone sends the full params object
+  //  regardless), but the type-mirror drift was a maintenance hazard.
+  SolverControls,
 } from '@shared/types';
 
 type Listener<T> = (payload: T) => void;
@@ -57,7 +64,12 @@ const api = {
     list: () => ipcRenderer.invoke(IpcChannels.caseList),
   },
   run: {
-    start: (params: { runId: string; caseDir: string; bashrc: string; cores: number; solver: string }) =>
+    // V1.31a — convergence key added (mirrors cfd-api.ts's CfdApi.run.start
+    //  surface). Track SolverControls["converge"] so any future
+    //  field added to SolverControlsSchema.converge flows through both
+    //  sides automatically rather than silently breaking the IPC
+    //  envelope.
+    start: (params: { runId: string; caseDir: string; bashrc: string; cores: number; solver: string; convergence?: SolverControls["converge"] }) =>
       ipcRenderer.invoke(IpcChannels.runStart, params),
     cancel: (runId: string) => ipcRenderer.invoke(IpcChannels.runCancel, { runId }),
     status: () => ipcRenderer.invoke(IpcChannels.runStatus),
