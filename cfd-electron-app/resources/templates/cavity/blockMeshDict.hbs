@@ -1,0 +1,80 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     |                                                 |
+|   \\    /   A nd           | Lid-driven cavity block mesh                   |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+convertToMeters 1;
+
+// Background block is anchored at ctx.origin (default (0,0,0)) and spans
+// [origin, origin + (Lx, Ly, Lz)]. The renderer sets origin = bbox.min
+// - padding*span for imported (snappy-driven) cases so the imported solid
+// fits inside the background mesh irrespective of its world-frame position.
+
+vertices
+(
+    ({{ox}}     {{oy}}     {{oz}})
+    ({{oxPLx}}  {{oy}}     {{oz}})
+    ({{oxPLx}}  {{oyPLy}}  {{oz}})
+    ({{ox}}     {{oyPLy}}  {{oz}})
+    ({{ox}}     {{oy}}     {{ozPLz}})
+    ({{oxPLx}}  {{oy}}     {{ozPLz}})
+    ({{oxPLx}}  {{oyPLy}}  {{ozPLz}})
+    ({{ox}}     {{oyPLy}}  {{ozPLz}})
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) ({{nx}} {{ny}} {{nz}}) simpleGrading (1 1 1)
+);
+
+edges
+(
+);
+
+boundary
+(
+    movingWall
+    {
+        type wall;
+        faces
+        (
+            (3 7 6 2)
+        );
+    }
+    fixedWalls
+    {
+        type wall;
+        faces
+        (
+            (0 4 7 3)
+            (2 6 5 1)
+            (1 5 4 0)
+        );
+    }
+    frontAndBack
+    {
+        type empty;
+        faces
+        (
+            (0 3 2 1)
+            (4 5 6 7)
+        );
+    }
+);
+
+mergePatchPairs
+(
+);
+
+// ************************************************************************* //

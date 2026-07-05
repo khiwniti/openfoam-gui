@@ -1,0 +1,35 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    location    "0";
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];
+
+// V1.7 — initial U driven by the Build Case form's "Initial U" inputs.
+//  Defaults to (0 0 0) for backward-compat with pre-V1.7 .cfd-app-state.json
+//  files. Override to set a freestream for external-flow cases.
+internalField   uniform ({{initialConditions.velocity.x}} {{initialConditions.velocity.y}} {{initialConditions.velocity.z}});
+
+boundaryField
+{
+    movingWall
+    {
+        type            fixedValue;
+        value           uniform (1 0 0);
+    }
+    fixedWalls
+    {
+        type            noSlip;
+    }
+    frontAndBack
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

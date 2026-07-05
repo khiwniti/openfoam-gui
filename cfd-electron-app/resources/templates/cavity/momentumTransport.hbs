@@ -1,0 +1,46 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      momentumTransport;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+simulationType  RAS;
+
+{{#if (eq turbulence 'laminar')}}
+RAS
+{
+    model           laminar;
+    turbulence      off;
+    printCoeffs     off;
+}
+{{/if}}
+{{#if (eq turbulence 'kEpsilon')}}
+RAS
+{
+    model           kEpsilon;
+    turbulence      on;
+    printCoeffs     on;
+}
+{{/if}}
+{{#if (eq turbulence 'kOmegaSST')}}
+RAS
+{
+    model           kOmegaSST;
+    turbulence      on;
+    printCoeffs     on;
+}
+{{/if}}
+{{#if (eq turbulence 'SpalartAllmaras')}}
+RAS
+{
+    model           SpalartAllmaras;
+    turbulence      on;
+    printCoeffs     on;
+}
+{{/if}}
+
+// ************************************************************************* //

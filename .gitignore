@@ -1,0 +1,13 @@
+# Cross-cutting OS/IDE junk only.
+# Each subproject keeps its own rules in cfd-electron-app/.gitignore,
+# chili3d/.gitignore, and chili3d/plugins/*/.gitignore.
+
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.bak
+*.log
+
+# Archive-side leakage: defensive, in case a prior `.git/` is ever moved back here.
+.git.backup-*

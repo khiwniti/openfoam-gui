@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid #3aa7ff;
+  outline-offset: 2px;
+}
+
+/* react-three-fiber canvas falls back to its own DOM pointer-events handling,
+   but we make sure it doesn't accidentally block UI overlays. */
+canvas {
+  outline: none;
+}
