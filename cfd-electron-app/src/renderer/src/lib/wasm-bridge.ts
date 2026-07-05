@@ -79,9 +79,11 @@ export function initWasm(): Promise<MainModule> {
   if (initPromise) return initPromise;
   initPromise = (async () => {
     // Vite serves /wasm/* from src/renderer/public/wasm/* (no bundling needed).
-    // chili-wasm.js does `new URL('chili-wasm.wasm', import.meta.url)` inside
-    // the module loader, so the .wasm must live next to the .js in public/.
+    //
+    //  V1.30 — @ts-expect-error: wildcards in global.d.ts ('/wasm/*',
+    //  '*chili-wasm.js', literal) fail to match under bundler resolution.
     const mod: { default: EmscriptenFactory } = await import(
+      // @ts-expect-error - Vite-served absolute /wasm/* URL
       /* @vite-ignore */ "/wasm/chili-wasm.js"
     );
     const wasmBinary = await fetch("/wasm/chili-wasm.wasm").then((r) =>

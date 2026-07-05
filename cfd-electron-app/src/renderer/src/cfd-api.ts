@@ -12,6 +12,7 @@ import type {
   RunLogEvent,
   RunPhaseEvent,
   RunResidualEvent,
+  SolverControls,
 } from "@shared/types";
 
 export type GeometryFormat = "STEP" | "STL" | "IGES";
@@ -49,7 +50,27 @@ export interface CfdApi {
   };
   run: {
     start: (
-      params: { runId: string; caseDir: string; bashrc: string; cores: number; solver: string },
+      params: {
+        runId: string;
+        caseDir: string;
+        bashrc: string;
+        cores: number;
+        solver: string;
+        // V1.30 — forward the convergence detector config (sourced from
+        //  `state.solverControlsBySolver[formSolver].converge`). Key name
+        //  matches the Zod schema's `convergence:` in
+        //  `src/main/ipc/index.ts`'s `runStart` handler. Optional so
+        //  pre-V1.8 renderer payloads (or a future user opting out of
+        //  detection at the case-build level) send logically; downstream
+        //  runner treats `undefined` as "detector disabled".
+        //
+        //  V1.30 review-fix #2 — type-as `SolverControls["converge"]`
+        //  so the CfdApi surface tracks the SolverControlsSchema.
+        //  Single-source-of-truth: any future field added to
+        //  SolverControlsSchema.converge flows in here automatically
+        //  rather than silently breaking the IPC envelope.
+        convergence?: SolverControls["converge"];
+      },
     ) => Promise<{ ok: boolean; message: string; runId?: string; caseDir?: string }>;
     cancel: (runId: string) => Promise<{ ok: boolean; runId: string }>;
     status: () => Promise<{ active: Array<{ id: string; caseDir: string; cancelled: boolean; done: boolean; startTime: number }> }>;

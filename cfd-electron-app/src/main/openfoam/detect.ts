@@ -121,5 +121,11 @@ export async function verifyBashrc(bashrcPath: string): Promise<OpenfoamDetected
   if (!detected) {
     return { found: false, bashrc: bashrcPath, installHints: [`Could not source ${bashrcPath}`] };
   }
-  return { found: true, ...detected };
+  // V1.29 -- returned `detected` directly (was previously
+  //  `{ found: true, ...detected }` which TS2783 flagged as
+  //  "found specified more than once"). `probeBashrc` already
+  //  stamps `found: true` on success, so the spread was
+  //  unnecessary; returning the validated object avoids the
+  //  static-analysis collision and the runtime spread cost.
+  return detected;
 }

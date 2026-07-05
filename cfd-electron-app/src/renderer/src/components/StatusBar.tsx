@@ -26,6 +26,12 @@ const phaseTone: Record<string, string> = {
   reconstructing: "bg-amber-700/30 text-amber-100",
   converting: "bg-amber-700/30 text-amber-100",
   done: "bg-emerald-700 text-emerald-100",
+  // V1.8 — solver converged before endTime. Same emerald tone as
+  //  'done' because the simulation is finished and the user can load
+  //  results, but the chip text reads the phase value directly so the
+  //  user can tell it stopped early because residuals flattened, not
+  //  because endTime was reached.
+  converged: "bg-emerald-700 text-emerald-100",
   error: "bg-red-700 text-red-100",
   cancelled: "bg-bg-700 text-bg-100",
 };

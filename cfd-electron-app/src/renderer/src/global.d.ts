@@ -10,10 +10,14 @@ import type {} from "./cfd-api";
 declare global {
   // eslint-disable-next-line no-var
   var wasm: MainModule;
+  interface Window {
+    cfd: import("./cfd-api").CfdApi;
+  }
 }
 
-interface Window {
-  cfd: import("./cfd-api").CfdApi;
-}
+// V1.30 — the `/wasm/chili-wasm.js` dynamic import in
+//  src/renderer/src/lib/wasm-bridge.ts is annotated with
+//  `@ts-expect-error`. Wildcard `declare module` blocks don't
+//  resolve absolute /wasm/* URLs under bundler resolution.
 
 export {};

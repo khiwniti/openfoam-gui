@@ -10,6 +10,7 @@ import type {
   CaseKind,
   Domain,
   OpenfoamDetected,
+  PatchRefinements,
   RunLogEvent,
   RunPhaseEvent,
   RunResidualEvent,

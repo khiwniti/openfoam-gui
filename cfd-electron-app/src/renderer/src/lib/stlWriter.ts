@@ -34,23 +34,6 @@ function* triangleIndicesForFaces(
 }
 
 /**
- * Iterate the indices of the triangles (in the index buffer) that belong to
- * the selected faces. Each yielded value is the index-buffer position of the
- * triangle's first vertex (i.e. `triangleStart / 3 === triangleIndex`).
- */
-function* triangleIndicesForFaces(
-  group: ReadonlyArray<number>,
-  selectedFaces: ReadonlySet<number>,
-): Generator<number> {
-  for (let fi = 0; fi < group.length / 2; fi++) {
-    if (!selectedFaces.has(fi)) continue;
-    const start = group[fi * 2] | 0;
-    const count = group[fi * 2 + 1] | 0;
-    for (let t = start; t < start + count; t++) yield t;
-  }
-}
-
-/**
  * Build a flat list of triangles ready for STL serialization.
  * Each entry stores its three vertex positions and the normal to write
  * (standard STL convention: one normal per triangle, taken from vertex 0).
@@ -170,9 +153,7 @@ export function countTriangles(group: ReadonlyArray<number>, selectedFaces: Read
   let total = 0;
   for (let fi = 0; fi < group.length / 2; fi++) {
     if (!selectedFaces.has(fi)) continue;
-    total += group[fi * 2 + 1] | 0;
+    total = group[fi * 2 + 1] | 0 + total;
   }
   return total;
 }
-
-export type { StlExportOptions };

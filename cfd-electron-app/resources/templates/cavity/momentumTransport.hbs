@@ -8,7 +8,7 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-simulationType  RAS;
+simulationType  {{#if (isLES turbulence)}}LES{{else}}RAS{{/if}};
 
 {{#if (eq turbulence 'laminar')}}
 RAS
@@ -24,6 +24,27 @@ RAS
     model           kEpsilon;
     turbulence      on;
     printCoeffs     on;
+
+    {{!-- V1.20 — k-ε coefficient sub-block. Pre-V1.20 this block
+         was absent, so OpenFOAM fell back to the model's built-in
+         defaults (Cmu 0.09, C1 1.44, C2 1.92, sigmak 1.0, sigmaEps
+         1.3) via the kEpsilon.C source. V1.20 emits the full
+         coefficient quintet explicitly so the user can tune RANS
+         convergence without hand-editing momentumTransport. Values
+         default to OpenFOAM stock via the Zod schema default chain
+         (DomainSchema.turbulenceCoefficients defaults), so legacy
+         .cfd-app-state.json files re-render with identical numerical
+         behavior. The `modelCoeffs` sub-block name is OpenFOAM's
+         portable cross-version name (works in both Foundation v9+
+         and Extend variants). --}}
+    modelCoeffs
+    {
+        Cmu          {{turbulenceCoefficients.Cmu}};
+        C1           {{turbulenceCoefficients.C1}};
+        C2           {{turbulenceCoefficients.C2}};
+        sigmak       {{turbulenceCoefficients.sigmak}};
+        sigmaEps     {{turbulenceCoefficients.sigmaEps}};
+    }
 }
 {{/if}}
 {{#if (eq turbulence 'kOmegaSST')}}
@@ -32,6 +53,43 @@ RAS
     model           kOmegaSST;
     turbulence      on;
     printCoeffs     on;
+
+    {{!-- V1.21 — k-ω SST coefficient sub-block. Pre-V1.21 this
+         block was absent, so OpenFOAM fell back to the model's
+         built-in Menter 2009 defaults (alphaK1 0.85, alphaK2 1.0,
+         alphaOmega1 0.5, alphaOmega2 0.856, beta1 0.075,
+         beta2 0.0828, betaStar 0.09, C1 2.0, gamma1 5/9,
+         gamma2 7/8, sigmaK 0.6, sigmaOmega 0.5) via the
+         kOmegaSST.C source. V1.21 emits all 12 OpenFOAM-accepted
+         SST coefficients explicitly so the user can tune
+         adverse-pressure-gradient response without hand-editing
+         momentumTransport. Values default to OpenFOAM stock via
+         the Zod schema default chain
+         (DomainSchema.turbulenceCoefficientsKOmegaSST defaults),
+         so legacy .cfd-app-state.json files re-render with
+         identical numerical behavior. The `modelCoeffs` sub-block
+         name is OpenFOAM's portable cross-version name (works in
+         both Foundation v9+ and Extend variants). The optional
+         `a1` limiter is intentionally absent — it's gated by an
+         `fvOptions::limitK` entry that the form doesn't surface
+         yet. The author of a future V.x that lifts the fvOptions
+         limitK toggle should add `a1` here alongside a
+         conditional Handlebars gate. --}}
+    modelCoeffs
+    {
+        alphaK1        {{turbulenceCoefficientsKOmegaSST.alphaK1}};
+        alphaK2        {{turbulenceCoefficientsKOmegaSST.alphaK2}};
+        alphaOmega1    {{turbulenceCoefficientsKOmegaSST.alphaOmega1}};
+        alphaOmega2    {{turbulenceCoefficientsKOmegaSST.alphaOmega2}};
+        beta1          {{turbulenceCoefficientsKOmegaSST.beta1}};
+        beta2          {{turbulenceCoefficientsKOmegaSST.beta2}};
+        betaStar       {{turbulenceCoefficientsKOmegaSST.betaStar}};
+        C1             {{turbulenceCoefficientsKOmegaSST.C1}};
+        gamma1         {{turbulenceCoefficientsKOmegaSST.gamma1}};
+        gamma2         {{turbulenceCoefficientsKOmegaSST.gamma2}};
+        sigmaK         {{turbulenceCoefficientsKOmegaSST.sigmaK}};
+        sigmaOmega     {{turbulenceCoefficientsKOmegaSST.sigmaOmega}};
+    }
 }
 {{/if}}
 {{#if (eq turbulence 'SpalartAllmaras')}}
@@ -40,6 +98,216 @@ RAS
     model           SpalartAllmaras;
     turbulence      on;
     printCoeffs     on;
+
+    {{!-- V1.22 — Spalart-Allmaras coefficient sub-block. Pre-V1.22 this
+         block was absent, so OpenFOAM fell back to the model's built-in
+         1994 + Pirzadeh 1999 cubic-ramp defaults
+         (sigmaNut 0.667 = 2/3, kappa 0.41, Cb1 0.1355, Cb2 0.622,
+         Cw1 0.3 [user-input, NOT derived from Cb1 / kappa^2 +
+         (1+Cb2)/sigmaNut per OpenFOAM's source], Cw2 0.3,
+         Cw3 2.0 [Pirzadeh cubic-ramp limiter], Cv1 7.1, Cv2 5.0)
+         via the SpalartAllmaras.C source. V1.22 emits the standard 9
+         coefficient nonet explicitly so the user can tune SA
+         convergence on adverse-pressure-gradient external flows
+         without hand-editing momentumTransport. Values default to
+         OpenFOAM stock via the Zod schema default chain
+         (DomainSchema.turbulenceCoefficientsSpalartAllmaras defaults),
+         so legacy .cfd-app-state.json files re-render with identical
+         numerical behavior. The `modelCoeffs` sub-block name is
+         OpenFOAM's portable cross-version name (works in both
+         Foundation v9+ and Extend variants). The 5 tripped-SAFvOptions
+         coefficients (At, Bt, ct1, ct2, ct3, ct4) are intentionally
+         absent here — they require an `fvOptions::trippedSA` entry
+         that the form doesn't surface yet. The author of a future
+         V.x that lifts the fvOptions trippedSA toggle should add
+         all 5 here alongside a conditional Handlebars gate.
+         Note: kappa is a RANS-universal constant (universal von
+         Kármán @ 0.41) but listed here because OpenFOAM's
+         SpalartAllmaras.C source reads it from modelCoeffs. --}}
+    modelCoeffs
+    {
+        sigmaNut       {{turbulenceCoefficientsSpalartAllmaras.sigmaNut}};
+        kappa          {{turbulenceCoefficientsSpalartAllmaras.kappa}};
+        Cb1            {{turbulenceCoefficientsSpalartAllmaras.Cb1}};
+        Cb2            {{turbulenceCoefficientsSpalartAllmaras.Cb2}};
+        Cw1            {{turbulenceCoefficientsSpalartAllmaras.Cw1}};
+        Cw2            {{turbulenceCoefficientsSpalartAllmaras.Cw2}};
+        Cw3            {{turbulenceCoefficientsSpalartAllmaras.Cw3}};
+        Cv1            {{turbulenceCoefficientsSpalartAllmaras.Cv1}};
+        Cv2            {{turbulenceCoefficientsSpalartAllmaras.Cv2}};
+    }
+}
+{{/if}}
+{{#if (eq turbulence 'Smagorinsky')}}
+{{!-- V1.23 — Smagorinsky (1963, Lilly 1966) LES sub-grid-scale model. Pre-V1.23
+     this branch was absent (V0.6's `'LES'` enum placeholder was filtered out
+     of the dropdown and the template had no LES branch), so OpenFOAM didn't
+     have an LES option in the Build Case form. V1.23 lifts Smagorinsky's
+     single C_s coefficient into the Build Case form (OpenFOAM stock 0.2,
+     `Cs^2 * delta * |S|` sub-grid-scale formulation). Values default to
+     OpenFOAM stock via the Zod schema default chain
+     (`DomainSchema.turbulenceCoefficientsLES.Cs` default), so the form
+     pre-populates C_s = 0.2 (the canonical Lilly 0.10-0.25 well-tested
+     range). 0.10-0.25 is the typical safe range; values above ~0.3
+     over-damp and below ~0.10 under-resolve near-wall energy cascades.
+     The `modelCoeffs` sub-block name is OpenFOAM's portable cross-version
+     name (works in both Foundation v9+ and Extend variants). --}}
+LES
+{
+    model           Smagorinsky;
+    turbulence      on;
+    printCoeffs     on;
+
+    modelCoeffs
+    {
+        Cs          {{turbulenceCoefficientsLES.Cs}};
+    }
+}
+{{/if}}
+{{#if (eq turbulence 'WALE')}}
+{{!-- V1.23 — WALE (Nicoud + Ducros 1999) LES sub-grid-scale model. Pre-V1.23
+     this branch was absent (see Smagorinsky above for context). V1.23
+     lifts WALE's single C_w coefficient into the Build Case form (OpenFOAM
+     stock 0.325, `(C_w * delta / C_k)^3 * S^d_ij S^d_ij` sub-grid-scale
+     formulation). The cubic structure gives WALE automatic zero-eddy-
+     viscosity at walls (no wall-damping function needed -- this is WALE's
+     main advantage over Smagorinsky for wall-resolved LES). Values default
+     to OpenFOAM stock via `DomainSchema.turbulenceCoefficientsLES.Cw`
+     default; the form pre-populates C_w = 0.325 (0.30-0.35 typical safe
+     range, matching Nicoud+Ducros 1999 specification). --}}
+LES
+{
+    model           WALE;
+    turbulence      on;
+    printCoeffs     on;
+
+    modelCoeffs
+    {
+        Cw          {{turbulenceCoefficientsLES.Cw}};
+    }
+}
+{{/if}}
+{{#if (eq turbulence 'kEqn')}}
+{{!-- V1.24 — k-equation LES sub-grid-scale model (Germano 1991). Pre-V1.24
+     this branch was absent (V1.23 lifted Smagorinsky + WALE; kEqn was
+     mentioned as a deferred variant in the LESCoefficientsSchema / SA /
+     kOmegaSST comments). V1.24 lifts the 3 OpenFOAM-stock k-Eqn coefficients
+     into the Build Case form via the parallel-slot
+     `turbulenceCoefficientsKEqn` field. Values default to OpenFOAM stock
+     (Ck 0.094 [filter coefficient], Ce1 1.048, Ce2 1.048) via the Zod
+     schema default chain (`DomainSchema.turbulenceCoefficientsKEqn`
+     defaults), so legacy .cfd-app-state.json files re-render with
+     identical numerical behavior. The `modelCoeffs` sub-block name is
+     OpenFOAM's portable cross-version name (works in both Foundation v9+
+     and Extend variants). --}}
+LES
+{
+    model           kEqn;
+    turbulence      on;
+    printCoeffs     on;
+
+    modelCoeffs
+    {
+        Ck          {{turbulenceCoefficientsKEqn.Ck}};
+        Ce1         {{turbulenceCoefficientsKEqn.Ce1}};
+        Ce2         {{turbulenceCoefficientsKEqn.Ce2}};
+    }
+}
+{{/if}}
+{{#if (eq turbulence 'dynamicSmagorinsky')}}
+{{!-- V1.25 -- dynamic-Smagorinsky LES sub-grid-scale model (Germano + Piomelli 1991).
+     Coefficient-less: a test-filter dynamic procedure is run at runtime
+     to compute an instantaneous local C_s, so OpenFOAM's
+     dynamicSmagorinsky.C source has no modelCoeffs block. Values inherit
+     from a fresh empty `modelCoeffs { }` (the Form skips the parallel
+     LESCoefficientsPreview / SpalartAllmarasCoefficientsPreview gates
+     because no user coefficients are exposed). The hybrid dynamic
+     procedure is well-validated for transitional / bluff-body wakes but
+     is noisy (Lilly 1992 comments on the "Lilly-from-DNS" derivation
+     remain canonical). Other dynamic LES / DES variants
+     (dynamicLagrangian, SpalartAllmarasDES, kOmegaSSTDES) follow. --}}
+LES
+{
+    model           dynamicSmagorinsky;
+    turbulence      on;
+    printCoeffs     on;
+}
+{{/if}}
+{{#if (eq turbulence 'dynamicLagrangian')}}
+{{!-- V1.25 -- dynamic-Lagrangian LES sub-grid-scale model (Meneveau + Lund 1997).
+     Coefficient-less: a Lagrangian test-filter dynamic procedure traces
+     resolved-scale fluid trajectories to compute an instantaneous
+     local C_s. The Lagrangian traversal is more numerically stable
+     than the volume-averaged test-filter (dynamicSmagorinsky) for
+     flows with strong spatial inhomogeneity in the inertial range.
+     OpenFOAM's dynamicLagrangian.C source has no modelCoeffs block;
+     the Form skips the parallel LESCoefficientsPreview gate. --}}
+LES
+{
+    model           dynamicLagrangian;
+    turbulence      on;
+    printCoeffs     on;
+}
+{{/if}}
+{{#if (eq turbulence 'SpalartAllmarasDES')}}
+{{!-- V1.25 -- Spalart-Allmaras DES (Spalart + Allmaras + Travin 2006).
+     Wraps the SpalartAllmaras (1994 + Pirzadeh 1999) RANS model in
+     the LES frame; reuses the 9 SA coefficients from
+     `turbulenceCoefficientsSpalartAllmaras` verbatim. The DES
+     shielding ramps the SA destruction term: behaves RANS in
+     attached regions, behaves LES in separated regions. No
+     additional coefficient slot required. --}}
+LES
+{
+    model           SpalartAllmarasDES;
+    turbulence      on;
+    printCoeffs     on;
+
+    modelCoeffs
+    {
+        sigmaNut       {{turbulenceCoefficientsSpalartAllmaras.sigmaNut}};
+        kappa          {{turbulenceCoefficientsSpalartAllmaras.kappa}};
+        Cb1            {{turbulenceCoefficientsSpalartAllmaras.Cb1}};
+        Cb2            {{turbulenceCoefficientsSpalartAllmaras.Cb2}};
+        Cw1            {{turbulenceCoefficientsSpalartAllmaras.Cw1}};
+        Cw2            {{turbulenceCoefficientsSpalartAllmaras.Cw2}};
+        Cw3            {{turbulenceCoefficientsSpalartAllmaras.Cw3}};
+        Cv1            {{turbulenceCoefficientsSpalartAllmaras.Cv1}};
+        Cv2            {{turbulenceCoefficientsSpalartAllmaras.Cv2}};
+    }
+}
+{{/if}}
+{{#if (eq turbulence 'kOmegaSSTDES')}}
+{{!-- V1.25 -- k-omega SST DES (Strelets 2001, Menter + Kuntz 2004).
+     Wraps the k-omega SST (Menter 2009) RANS model in the LES frame;
+     reuses the 12 SST coefficients from `turbulenceCoefficientsKOmegaSST`
+     verbatim, AND emits the DES shielding-function CDES coefficient
+     from the new V1.25 parallel slot `turbulenceCoefficientsCDES`.
+     OpenFOAM stock CDES = 0.65 (Shur + Spalart + Strelets 2008).
+     The DES shield gives clean RANS->LES transition in separated
+     flows; CDES tunes the transition delay. --}}
+LES
+{
+    model           kOmegaSSTDES;
+    turbulence      on;
+    printCoeffs     on;
+
+    modelCoeffs
+    {
+        alphaK1        {{turbulenceCoefficientsKOmegaSST.alphaK1}};
+        alphaK2        {{turbulenceCoefficientsKOmegaSST.alphaK2}};
+        alphaOmega1    {{turbulenceCoefficientsKOmegaSST.alphaOmega1}};
+        alphaOmega2    {{turbulenceCoefficientsKOmegaSST.alphaOmega2}};
+        beta1          {{turbulenceCoefficientsKOmegaSST.beta1}};
+        beta2          {{turbulenceCoefficientsKOmegaSST.beta2}};
+        betaStar       {{turbulenceCoefficientsKOmegaSST.betaStar}};
+        C1             {{turbulenceCoefficientsKOmegaSST.C1}};
+        gamma1         {{turbulenceCoefficientsKOmegaSST.gamma1}};
+        gamma2         {{turbulenceCoefficientsKOmegaSST.gamma2}};
+        sigmaK         {{turbulenceCoefficientsKOmegaSST.sigmaK}};
+        sigmaOmega     {{turbulenceCoefficientsKOmegaSST.sigmaOmega}};
+        CDES           {{turbulenceCoefficientsCDES.CDES}};
+    }
 }
 {{/if}}
 

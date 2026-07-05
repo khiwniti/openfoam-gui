@@ -187,6 +187,19 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
           bashrc: z.string(),
           cores: z.number().int().min(1).max(64),
           solver: z.string(),
+          /** V1.8 — convergence detector settings, sourced from
+           *  `state.solverControlsBySolver[formSolver].converge`. Optional
+           *  to stay back-compat with the pre-V1.8 renderer payload
+           *  shape; undefined is treated as "detector disabled"
+           *  downstream. Forwarded through to startRun via RunOptions. */
+          convergence: z
+            .object({
+              enabled: z.boolean(),
+              maxInitialResidual: z.number().positive(),
+              stableIterations: z.number().int().positive(),
+              autoStop: z.boolean(),
+            })
+            .optional(),
         })
         .parse(args);
       // Probe the on-disk state file to learn whether this is a snappy (imported)
@@ -205,6 +218,11 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
           onLog: (c) => logBroadcaster.push(c),
           onPhase: (p, m) => phaseBroadcaster.push({ phase: p, message: m, runId: input.runId }),
           onResidual: (r) => residualsBroadcaster.push(r),
+          // V1.8 — forward the detector config so the runner's stage
+          //  loop builds + wires the convergence monitor on each
+          //  spawned child. Strict-shape (Zod-validated upstream);
+          //  undefined is OK and disables the detector.
+          convergence: input.convergence,
         },
         input.runId,
       );

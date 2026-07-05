@@ -62,7 +62,7 @@ Currently, SplashFOAM is supported on **Ubuntu** (recommended to run on **22.04.
   chmod +x run_PreInstaller.sh
   ./run_PreInstaller.sh
 
-- Ensure you have Zenity installed. If not, execute the command below:
+- Ensure you have Zenity installed. If not, exneecute the command below:
 
   ```bash
   sudo apt-get install -y zenity

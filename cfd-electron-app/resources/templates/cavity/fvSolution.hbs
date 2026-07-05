@@ -17,12 +17,17 @@ FoamFile
 
 solvers
 {
+    // V1.18d — solver block lifted from Domain.solverConfigs.p. The
+    //  smoother/preconditioner line is emitted via the `smootherLine`
+    //  helper in case.ts (OpenFOAM needs the correct keyword per
+    //  solver family — `smoother ...` for GAMG/smoothSolver,
+    //  `preconditioner ...` for PCG/PBiCG/PBiCGStab).
     p
     {
-        solver          GAMG;
-        tolerance       1e-7;
-        relTol          0.01;
-        smoother        GaussSeidel;
+        solver          {{solverConfigs.p.solver}};
+        {{smootherLine solverConfigs.p.solver}}
+        tolerance       {{solverConfigs.p.tolerance}};
+        relTol          {{solverConfigs.p.relTol}};
     }
 
     pFinal
@@ -33,37 +38,37 @@ solvers
 
     U
     {
-        solver          smoothSolver;
-        smoother        symGaussSeidel;
-        tolerance       1e-7;
-        relTol          0.1;
+        solver          {{solverConfigs.U.solver}};
+        {{smootherLine solverConfigs.U.solver}}
+        tolerance       {{solverConfigs.U.tolerance}};
+        relTol          {{solverConfigs.U.relTol}};
     }
 
     {{#if (eq turbulence 'kEpsilon')}}
     "k|epsilon"
     {
-        solver          smoothSolver;
-        smoother        symGaussSeidel;
-        tolerance       1e-7;
-        relTol          0.1;
+        solver          {{solverConfigs.turbulence.solver}};
+        {{smootherLine solverConfigs.turbulence.solver}}
+        tolerance       {{solverConfigs.turbulence.tolerance}};
+        relTol          {{solverConfigs.turbulence.relTol}};
     }
     {{/if}}
     {{#if (eq turbulence 'kOmegaSST')}}
     "k|omega"
     {
-        solver          smoothSolver;
-        smoother        symGaussSeidel;
-        tolerance       1e-7;
-        relTol          0.1;
+        solver          {{solverConfigs.turbulence.solver}};
+        {{smootherLine solverConfigs.turbulence.solver}}
+        tolerance       {{solverConfigs.turbulence.tolerance}};
+        relTol          {{solverConfigs.turbulence.relTol}};
     }
     {{/if}}
     {{#if (eq turbulence 'SpalartAllmaras')}}
     nuTilda
     {
-        solver          smoothSolver;
-        smoother        symGaussSeidel;
-        tolerance       1e-7;
-        relTol          0.1;
+        solver          {{solverConfigs.turbulence.solver}};
+        {{smootherLine solverConfigs.turbulence.solver}}
+        tolerance       {{solverConfigs.turbulence.tolerance}};
+        relTol          {{solverConfigs.turbulence.relTol}};
     }
     {{/if}}
 }
@@ -71,8 +76,8 @@ solvers
 {{#if (eq solver 'icoFoam')}}
 PISO
 {
-    nCorrectors     2;
-    nNonOrthogonalCorrectors 0;
+    nCorrectors     {{numerics.nCorrectors}};
+    nNonOrthogonalCorrectors {{numerics.nNonOrthogonalCorrectors}};
     pRefCell        0;
     pRefValue       0;
 }
@@ -80,37 +85,72 @@ PISO
 {{#if (eq solver 'simpleFoam')}}
 SIMPLE
 {
-    nNonOrthogonalCorrectors 0;
+    nNonOrthogonalCorrectors {{numerics.nNonOrthogonalCorrectors}};
     residualControl
     {
-        p               1e-4;
-        U               1e-4;
-        {{#unless (eq turbulence 'laminar')}}
-        "(k|epsilon|omega|nuTilda)" 1e-4;
-        {{/unless}}
+        p               {{or numerics.residualControlByField.p numerics.residualControl}};
+        U               {{or numerics.residualControlByField.U numerics.residualControl}};
+        {{#if (eq solver 'buoyantSimpleFoam')}}
+        T               {{or numerics.residualControlByField.T numerics.residualControl}};
+        {{/if}}
+        {{#if (eq turbulence 'kEpsilon')}}
+        k               {{or numerics.residualControlByField.k numerics.residualControl}};
+        epsilon         {{or numerics.residualControlByField.epsilon numerics.residualControl}};
+        {{/if}}
+        {{#if (eq turbulence 'kOmegaSST')}}
+        k               {{or numerics.residualControlByField.k numerics.residualControl}};
+        omega           {{or numerics.residualControlByField.omega numerics.residualControl}};
+        {{/if}}
+        {{#if (eq turbulence 'SpalartAllmaras')}}
+        nuTilda         {{or numerics.residualControlByField.nuTilda numerics.residualControl}};
+        {{/if}}
     }
 }
+{{/if}}
+{{!-- V1.11 review-fix #1 — hoist the relaxationFactors block out of
+     the simpleFoam-only {{#if}} so buoyantSimpleFoam and potentialFoam
+     (which both use SIMPLE-style under-relaxation in OpenFOAM and
+     therefore need the block) also receive user overrides.
+     V1.18b — replace the explicit solver-list with the precomputed
+     `emitRelaxationFactors` boolean from case.ts. SIMPLE-family
+     solvers (simpleFoam+buoyantSimpleFoam+potentialFoam) always
+     emit; pimpleFoam emits only when the V1.18b UI opt-in flag is
+     set. PISO solvers never emit (no under-relaxation in PISO).
+     The boolean resolves to V1.11 behavior for pre-V1.18b cases
+     (enabled=false on load → no PIMPLE block). --}}
+{{#if emitRelaxationFactors}}
 relaxationFactors
 {
     fields
     {
-        p               0.3;
+        p               {{or relaxationFactors.fields.p 0.3}};
+        {{#if (eq solver 'buoyantSimpleFoam')}}
+        T               {{or relaxationFactors.fields.T 0.7}};
+        {{/if}}
     }
     equations
     {
-        U               0.7;
-        {{#unless (eq turbulence 'laminar')}}
-        "(k|epsilon|omega|nuTilda)" 0.7;
-        {{/unless}}
+        U               {{or relaxationFactors.equations.U 0.7}};
+        {{#if (eq turbulence 'kEpsilon')}}
+        k               {{or relaxationFactors.equations.k 0.7}};
+        epsilon         {{or relaxationFactors.equations.epsilon 0.7}};
+        {{/if}}
+        {{#if (eq turbulence 'kOmegaSST')}}
+        k               {{or relaxationFactors.equations.k 0.7}};
+        omega           {{or relaxationFactors.equations.omega 0.7}};
+        {{/if}}
+        {{#if (eq turbulence 'SpalartAllmaras')}}
+        nuTilda         {{or relaxationFactors.equations.nuTilda 0.7}};
+        {{/if}}
     }
 }
 {{/if}}
 {{#if (eq solver 'pimpleFoam')}}
 PIMPLE
 {
-    nOuterCorrectors 1;
-    nCorrectors      2;
-    nNonOrthogonalCorrectors 0;
+    nOuterCorrectors {{numerics.nOuterCorrectors}};
+    nCorrectors      {{numerics.nCorrectors}};
+    nNonOrthogonalCorrectors {{numerics.nNonOrthogonalCorrectors}};
 }
 {{/if}}
 

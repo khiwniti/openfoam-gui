@@ -43,4 +43,20 @@ timePrecision   6;
 
 runTimeModifiable true;
 
+{{!-- V1.19 — adaptive time-stepping toggle. Pre-V1.19 the controlDict
+     hard-coded the absence of these lines, so users wanting Courant-
+     bounded Δt had to hand-edit. With `emitAdaptiveTimeStep === true`
+     (pimpleFoam or icoFoam with `adaptiveTimeStep.enabled === true`),
+     OpenFOAM re-picks Δt every iteration so Co stays ≤ `maxCo`.
+     Otherwise OpenFOAM uses the user-supplied Δt verbatim. SIMPLE-
+     family solvers short-circuit the boolean in case.ts and always
+     receive the `no;` branch (the field is a steady-state no-op in
+     OpenFOAM so emitting it would just be noise). --}}
+{{#if emitAdaptiveTimeStep}}
+adjustTimeStep  yes;
+maxCo           {{adaptiveTimeStep.maxCo}};
+{{else}}
+adjustTimeStep  no;
+{{/if}}
+
 // ************************************************************************* //

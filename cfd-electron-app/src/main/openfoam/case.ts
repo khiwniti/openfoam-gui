@@ -9,6 +9,7 @@ import { z } from 'zod';
 import {
   BoundaryConditionsSchema,
   DomainSchema,
+  LES_TURBULENCE_TYPES,
   PatchRefinementSchema,
   type Domain,
   type BoundaryConditions,
@@ -20,6 +21,61 @@ import {
 
 Handlebars.registerHelper('eq', (a: unknown, b: unknown) => a === b);
 Handlebars.registerHelper('or', (a: unknown, b: unknown) => a || b);
+
+/**
+ * V1.24 -- LES-roster predicate. Returns true when the active
+ *  turbulence model is any LES variant. Reads through the
+ *  `LES_TURBULENCE_TYPES as const` lift from `@shared/types`
+ *  (V1.26) -- the case.ts body is now a one-line source-of-truth
+ *  consumer; adding a new LES variant updates `TurbulenceModelSchema`
+ *  + `LES_TURBULENCE_TYPES` in lockstep (the latter has a
+ *  `satisfies readonly TurbulenceModel[]` clause that TS-checks both
+ *  flags stay in sync at compile time). Pre-V1.26 the helper held a
+ *  hand-maintained 7-string array that drifted in lockstep with the
+ *  enum on every V1.23 / V1.24 / V1.25 / V1.x LES-add round; V1.26
+ *  closes that drift.
+ */
+// V1.26 -- isLES helper routes through LES_TURBULENCE_TYPES as
+//  const. The runtime cost is identical (constant-folded .includes),
+//  while the source-of-truth contract is enforced at compile time.
+Handlebars.registerHelper('isLES', (t: unknown) => {
+  if (typeof t !== 'string') return false;
+  return (LES_TURBULENCE_TYPES as readonly string[]).includes(t);
+});
+
+/**
+ * V1.18d — matrix solver → smoother/preconditioner line. OpenFOAM
+ *  expects different keywords depending on the solver family:
+ *  smoother-line used for GAMG + smoothSolver (GaussSeidel /
+ *  symGaussSeidel); preconditioner-line used for PCG, PBiCG,
+ *  PBiCGStab (DIC / DILU). The helper returns the full line
+ *  including the leading whitespace so the template stays
+ *  read-clean.
+ */
+Handlebars.registerHelper('smootherLine', function (solver: unknown) {
+  const s = typeof solver === 'string' ? solver : '';
+  let line: string;
+  switch (s) {
+    case 'GAMG':
+      line = 'smoother        GaussSeidel;';
+      break;
+    case 'smoothSolver':
+      line = 'smoother        symGaussSeidel;';
+      break;
+    case 'PCG':
+      line = 'preconditioner  DIC;';
+      break;
+    case 'PBiCG':
+      line = 'preconditioner  DILU;';
+      break;
+    case 'PBiCGStab':
+      line = 'preconditioner  DILU;';
+      break;
+    default:
+      line = 'smoother        GaussSeidel;';
+  }
+  return new Handlebars.SafeString(line);
+});
 
 /**
  * V1.2 — render a per-patch BcField as OpenFOAM boundary-condition syntax.
@@ -216,6 +272,36 @@ export async function renderCase(
     oxPLx: String((domain.origin?.x ?? 0) + domain.Lx),
     oyPLy: String((domain.origin?.y ?? 0) + domain.Ly),
     ozPLz: String((domain.origin?.z ?? 0) + domain.Lz),
+    // V1.18b — precomputed `emitRelaxationFactors` boolean for fvSolution.
+    //  SIMPLE-family solvers (simpleFoam, buoyantSimpleFoam, potentialFoam)
+    //  emit the block unconditionally per V1.11 review-fix; pimpleFoam
+    //  emits only when `relaxationFactors.enabled === true` (off by default
+    //  for PIMPLE per the V1.18b designer recommendation). Pre-computing
+    //  here avoids needing a Handlebars `and` helper in the template.
+    //
+    //  V1.18b review-fix — `domain.relaxationFactors` is now part of
+    //  DomainSchema (added alongside V1.18d's `solverConfigs`) so the
+    //  optional-chaining read drops to a direct property access. Pre-
+    //  V1.18b cases parse with `enabled: false` via Zod defaults and the
+    //  boolean resolves to V1.11 behavior (PIMPLE never emits).
+    emitRelaxationFactors:
+      domain.solver === "simpleFoam" ||
+      domain.solver === "buoyantSimpleFoam" ||
+      domain.solver === "potentialFoam" ||
+      (domain.solver === "pimpleFoam" && domain.relaxationFactors.enabled),
+    // V1.19 — precomputed boolean used by controlDict.hbs to gate
+    //  the `adjustTimeStep yes;` block. SIMPLE-family solvers
+    //  (simpleFoam, buoyantSimpleFoam, potentialFoam) ignore the
+    //  field entirely in OpenFOAM, so we hard-route them to `no`
+    //  regardless of the form's displayed toggle (the values
+    //  still roundtrip through .cfd-app-state.json for renderer
+    //  state consistency, but the emitted controlDict is always
+    //  OpenFOAM stock). pimpleFoam + icoFoam honor the toggle
+    //  directly: emitting `yes; maxCo X;` when enabled, `no;`
+    //  otherwise.
+    emitAdaptiveTimeStep:
+      ((domain.solver === "pimpleFoam" || domain.solver === "icoFoam") &&
+        domain.adaptiveTimeStep.enabled),
   };
 
   const written: string[] = [];

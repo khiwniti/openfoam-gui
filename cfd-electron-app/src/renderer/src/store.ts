@@ -130,6 +130,12 @@ interface State {
    *  MAX_RESIDUAL_POINTS for the live sparkline. Cleared at run start
    *  and on reset. */
   residualHistory: ResidualPoint[];
+  /** V1.8 — informational: when (if ever) the convergence detector fired
+   *  during the current/last run. Stays visible in StatusBar even after
+   *  the solver phase pill moves on (reconstructing / converting) so the
+   *  user can tell that the residuals did flatten. Cleared at run start
+   *  and on `clearRunState`. */
+  lastConvergence: { atTime: number; atMs: number } | null;
 
   // Settings slice (V0.9)
   /** Last-known settings as persisted in ~/.config/cfd-studio/settings.json.
@@ -226,6 +232,11 @@ interface Actions {
   appendLogChunk: (chunk: { stream: "stdout" | "stderr"; text: string; runId?: string }) => void;
   setRunPhase: (phase: Phase, message: string | undefined, runId?: string) => void;
   pushResidual: (point: { time: number; fields: Record<string, number>; runId?: string }) => void;
+  /** V1.8 — stamp the moment the convergence detector fired. Called from
+   *  setRunPhase when the incoming phase is 'converged'. Survives the
+   *  pill moving past 'converged' so the user can see the t= snapshot
+   *  even after moving to a later stage. */
+  setLastConvergence: (atTime: number) => void;
 
   // Settings slice actions (V0.9)
   /** Load persisted settings from ~/.config/cfd-studio/settings.json. Called on mount. */
@@ -269,7 +280,7 @@ const initial: State = {
   // The Build Case form reads from `solverControlsBySolver[formSolver]`
   // and `buildCaseFromPatches` merges the active solver's entry into the
   // Domain sent to IPC.
-  solverControlsBySolver: SOLVER_CONTROLS_DEFAULTS,
+  solverControlsBySolver: makeSolverControlsDefaults(),
   // V1.5 — the Build Case form's currently-active solver. Defaults to
   // simpleFoam, matching the implicit default every V1.0..V1.4 build used.
   formSolver: "simpleFoam" as Solver,
@@ -291,6 +302,8 @@ const initial: State = {
   recentLogs: [],
   lastResidual: null,
   residualHistory: [],
+  // V1.8 — null until the convergence detector fires for the current/last run.
+  lastConvergence: null,
   // Settings slice (V0.9) — `settings` defaults match the Zod schema defaults.
   settings: { maxLogBufferLines: 2000 },
   isSettingsOpen: false,
@@ -337,7 +350,8 @@ function newPatchId(): string {
  *     a global (1, 0, 0) freestream would conflict with the noSlip walls
  *     and bounce the residuals on iterate #1.
  */
-const SOLVER_CONTROLS_DEFAULTS: SolverControlsBySolver = {
+function makeSolverControlsDefaults(): SolverControlsBySolver {
+  return {
   icoFoam: {
     solver: "icoFoam",
     turbulence: "laminar",
@@ -348,6 +362,129 @@ const SOLVER_CONTROLS_DEFAULTS: SolverControlsBySolver = {
     cores: 4,
     nu: 1e-5,
     initialConditions: { velocity: { x: 0, y: 0, z: 0 }, pressure: 0 },
+    // V1.8 — transient solver: looser threshold, shorter streak.
+    converge: { enabled: true, maxInitialResidual: 1e-3, stableIterations: 50, autoStop: false },
+    // V1.9 — PISO uses nCorrectors (no outer loop). 2 correctors is the
+    // canonical OpenFOAM lid-driven-cavity starter; raising to 3-4
+    // helps when the mesh has non-orthogonal cells.
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    // V1.11 — PISO solver; OpenFOAM doesn't emit a relaxationFactors
+    //  block for PISO by default (momentum_predictor is on, but no
+    //  under-relaxation). Empty maps let the template fall through to
+    //  "no relaxationFactors block", preserving the V1.10 behavior.
+    relaxationFactors: { enabled: false, fields: {}, equations: {} },
+    // V1.19 — adaptiveTimeStep mirror of OpenFOAM stock (transient
+    //  solvers, toggle off by default; `maxCo: 1` mirrors OpenFOAM
+    //  built-in). icoFoam + pimpleFoam use the same shape since
+    //  both are transient; the form row only renders for them so
+    //  the value is dormant for the other 3 solvers (case.ts
+    //  precomputes `emitAdaptiveTimeStep` to short-circuit the
+    //  controlDict template for steady solvers).
+    adaptiveTimeStep: { enabled: false, maxCo: 1 },
+    // V1.12 — fvSchemes `default` selectors. icoFoam is transient so
+    //  ddtDefault must be `Euler` (steadyState would silently break
+    //  the time integration). Spatial schemes (grad / div / laplacian)
+    //  use OpenFOAM stock incompressible defaults.
+    // V1.15 — also seeds `interpolationDefault: 'linear'` and
+    //  `snGradDefault: 'corrected'` (Solver-agnostic OpenFOAM stock
+    //  values, mirrored across all five SOLVER_CONTROLS_DEFAULTS
+    //  entries so the renderer's pre-parse in-memory state matches
+    //  what FvSchemesSchema.default() materializes on parse).
+    // V1.16 — also seeds `fieldLaplacians: {}` so per-field
+    //  laplacian overrides (V1.16's 6-row UI flow) are reachable
+    //  from the renderer's pre-parse in-memory state. Zod fills the
+    //  same `{}` on parse for pre-V1.16 cases.
+    // V1.17 — also seeds `fieldSnGrads: {}` so per-field snGrad
+    //  overrides (V1.17's 6-row UI flow) are reachable from the
+    //  renderer's pre-parse in-memory state. Solver-agnostic OpenFOAM
+    //  stock values; the fvSchemes.hbs `{{or override "corrected"}}`
+    //  helpers fall back to the snGradDefault value at render time.
+    schemes: { ddtDefault: 'Euler', gradDefault: 'Gauss linear', divDefault: 'none', laplacianDefault: 'Gauss linear corrected', interpolationDefault: 'linear', snGradDefault: 'corrected', fieldDivs: {}, fieldLaplacians: {}, fieldSnGrads: {} },
+    solverConfigs: { p: { solver: 'GAMG', tolerance: 1e-7, relTol: 0.01 }, U: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 }, turbulence: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 } },
+    // V1.20 — k-ε turbulence-coefficient seed (OpenFOAM stock
+    //  Cmu 0.09, C1 1.44, C2 1.92, sigmak 1.0, sigmaEps 1.3). Same
+    //  default across all 5 SOLVER_CONTROLS_DEFAULTS entries
+    //  because (a) the seed is solver-agnostic — flipping
+    //  solver/turbulence just keeps the values dormant until the
+    //  user picks kEpsilon — and (b) keeping matching seeds across
+    //  5 entries means flipping back to a previous solver restores
+    //  any kEpsilon-tuning the user did before.
+    turbulenceCoefficients: { Cmu: 0.09, C1: 1.44, C2: 1.92, sigmak: 1.0, sigmaEps: 1.3 },
+    // V1.21 — k-ω SST coefficient seed (OpenFOAM stock Menter 2009
+    //  values: alphaK1 0.85, alphaK2 1.0, alphaOmega1 0.5,
+    //  alphaOmega2 0.856, beta1 0.075, beta2 0.0828, betaStar 0.09,
+    //  C1 2.0, gamma1 5/9, gamma2 7/8, sigmaK 0.6, sigmaOmega 0.5).
+    //  Parallel slot to V1.20's `turbulenceCoefficients` (kEpsilon);
+    //  the form only renders this row when the user picks kOmegaSST,
+    //  so the values stay dormant otherwise. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20's kEpsilon slot. a1 (the Menter limiter) is
+    //  intentionally absent — see KOmegegaSSTCoefficientsSchema
+    //  comment; SpalartAllmaras coefficients are V1.22.
+    turbulenceCoefficientsKOmegaSST: { alphaK1: 0.85, alphaK2: 1.0, alphaOmega1: 0.5, alphaOmega2: 0.856, beta1: 0.075, beta2: 0.0828, betaStar: 0.09, C1: 2.0, gamma1: 0.5555555555, gamma2: 0.875, sigmaK: 0.6, sigmaOmega: 0.5 },
+    // V1.22 — Spalart-Allmaras coefficient seed. OpenFOAM stock
+    //  (1994 + Pirzadeh 1999 cubic ramp: sigmaNut 0.667 = 2/3,
+    //  kappa 0.41 [von Kármán, RANS-universal but OpenFOAM's
+    //  SpalartAllmaras.C reads it from modelCoeffs], Cb1 0.1355,
+    //  Cb2 0.622, Cw1 0.3 [canonical USER INPUT — NOT derived
+    //  from Cb1 / kappa^2 + (1+Cb2) / sigmaNut ≈ 0.281 per
+    //  OpenFOAM's SpalartAllmaras.C source, which explicitly
+    //  reads from modelCoeffs.Cw1], Cw2 0.3 [SA-wall-damping
+    //  secondary coefficient — V1.22 shares this value with the
+    //  OpenFOAM 2.4.x independent re-tuning], Cw3 2.0 [Pirzadeh
+    //  cubic-ramp limiter], Cv1 7.1, Cv2 5.0). Parallel slot to
+    //  V1.20's `turbulenceCoefficients` (kEpsilon) and V1.21's
+    //  `turbulenceCoefficientsKOmegaSST`. The form only renders
+    //  this row when the user picks SpalartAllmaras; values stay
+    //  dormant otherwise. Defaults match all 5 SOLVER_CONTROLS_DEFAULTS
+    //  entries for the same symmetry reason as V1.20/V1.21. The 5
+    //  tripped-SAFvOptions coefficients (At, Bt, ct1, ct2, ct3,
+    //  ct4) are intentionally absent — they require an
+    //  fvOptions::trippedSA entry that the form doesn't surface
+    //  yet (same precedent as V1.21's `a1` deferral for limitK).
+    turbulenceCoefficientsSpalartAllmaras: { sigmaNut: 0.667, kappa: 0.41, Cb1: 0.1355, Cb2: 0.622, Cw1: 0.3, Cw2: 0.06, Cw3: 2.0, Cv1: 7.1, Cv2: 5.0 },
+    // V1.23 — LES sub-grid-scale coefficient seed (OpenFOAM stock
+    //  Smagorinsky 1963 / Lilly 1967 / Nicoud+Ducros 1999 stems:
+    //  C_s 0.2, C_w 0.325).
+    //  Fourth sibling to V1.20's `turbulenceCoefficients` (kEpsilon),
+    //  V1.21's `turbulenceCoefficientsKOmegaSST` (kOmegaSST), and
+    //  V1.22's `turbulenceCoefficientsSpalartAllmaras`. The form
+    //  only renders this row when the user picks Smagorinsky or WALE;
+    //  values stay dormant otherwise. Single-schema design (one
+    //  LESCoefficientsSchema holding both C_s and C_w) keeps the
+    //  parallel slot count to one entry per turbulence-model family,
+    //  mirroring the V1.20-V1.22 kEpsilon / kOmegaSST / SA siblings'
+    //  per-model schema pattern. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20/V1.21/V1.22. Other LES variants (kEqn,
+    //  dynamicSmagorinsky, dynamicLagrangian, SpalartAllmarasDES)
+    //  are deferred to a future V.x.
+    turbulenceCoefficientsLES: { Cs: 0.2, Cw: 0.325 },
+    // V1.24 — k-equation LES coefficient seed (OpenFOAM stock
+    //  Germano 1991 / Lilly 1967: C_k 0.094, C_e1 1.048, C_e2 1.048).
+    //  5th sibling to V1.20–V1.23 RANS / LES slots; one slot per
+    //  LES family. The form only renders this row when the user
+    //  picks kEqn; values stay dormant otherwise. Same default
+    //  across all 5 SOLVER_CONTROLS_DEFAULTS entries for the
+    //  symmetry reason as V1.20/V1.21/V1.22/V1.23. Other LES
+    //  variants (dynamicSmagorinsky / dynamicLagrangian /
+    //  SpalartAllmarasDES / kOmegaSSTDES) deferred to V1.25 /
+    //  V1.26 — dynamic variants have no user-tunable coefficients
+    //  (model derives Cs dynamically from the resolved field),
+    //  and DES variants need a separate alpha-blending slot.
+    turbulenceCoefficientsKEqn: { Ck: 0.094, Ce1: 1.048, Ce2: 1.048 },
+    // V1.25 -- DES shielding coefficient seed (OpenFOAM stock 0.65
+    //  per Shur + Spalart + Strelets 2008). Used by the
+    //  kOmegaSSTDES variant only (SpalartAllmarasDES re-uses SA's
+    //  9-coefficient slot verbatim; the dynamic-Smagorinsky /
+    //  dynamic-Lagrangian pair runs a runtime test-filter
+    //  dynamic procedure with no user coefficients). 5th
+    //  parallel-slot sibling to V1.20's turbulenceCoefficients
+    //  (kEpsilon), V1.21's turbulenceCoefficientsKOmegaSST, V1.22's
+    //  turbulenceCoefficientsSpalartAllmaras, V1.23's
+    //  turbulenceCoefficientsLES, and V1.24's
+    //  turbulenceCoefficientsKEqn.
+    turbulenceCoefficientsCDES: { CDES: 0.65 },
   },
   simpleFoam: {
     solver: "simpleFoam",
@@ -359,8 +496,181 @@ const SOLVER_CONTROLS_DEFAULTS: SolverControlsBySolver = {
     cores: 4,
     nu: 1e-5,
     initialConditions: { velocity: { x: 0, y: 0, z: 0 }, pressure: 0 },
+    // V1.8 — steady solver: tighter threshold (1e-4) and longer streak (200).
+    converge: { enabled: true, maxInitialResidual: 1e-4, stableIterations: 200, autoStop: false },
+    // V1.9 — SIMPLE has no outer/corrector loop, just nNonOrth + residual
+    //  tolerance. residualControl drives the per-field target values in
+    //  fvSolution's residualControl block (1e-4 is the OpenFOAM built-in
+    //  default and matches the V1.8-era hard-coded template).
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    // V1.11 — SIMPLE solver. OpenFOAM built-in defaults (p=0.3, U=0.7)
+    //  are baked into the template fallback so empty overrides render
+    //  identically; the user can dial p tighter or relaxer via the
+    //  Build Case form's "Relaxation factors" details.
+    relaxationFactors: { enabled: false, fields: { p: 0.3 }, equations: { U: 0.7 } },
+    // V1.19 — adaptiveTimeStep mirror of OpenFOAM stock for SIMPLE-family
+    //  solvers (simpleFoam/buoyantSimpleFoam/potentialFoam). Toggle off
+    //  by default; OpenFOAM ignores the field entirely for steady
+    //  algorithms so the value is dormant (case.ts precomputes
+    //  `emitAdaptiveTimeStep` to short-circuit the controlDict template).
+    adaptiveTimeStep: { enabled: false, maxCo: 1 },
+    // V1.12 — SIMPLE-family steady solver. ddtDefault MUST be
+    //  `steadyState` — SIMPLE algorithms are steady-state by
+    //  definition, so emitting `Euler` would produce a pointless time
+    //  loop. Spatial schemes retain OpenFOAM stock choices.
+    // V1.15 — `interpolationDefault: 'linear'` and `snGradDefault:
+    //  'corrected'` are solver-agnostic, so they ride on the same
+    //  OpenFOAM stock values as the V1.12 spatial selectors.
+    // V1.16 — `fieldLaplacians: {}` seeds the per-field laplacian
+    //  override map (all five SOLVER_CONTROLS_DEFAULTS entries use
+    //  the same empty starting state; the fvSchemes.hbs `{{or override
+    //  "Gauss linear corrected"}}` helpers fall back to the
+    //  laplacianDefault value at render time).
+    // V1.17 — `fieldSnGrads: {}` seeds the per-field snGrad override
+    //  map (all five SOLVER_CONTROLS_DEFAULTS entries use the same
+    //  empty starting state; fvSchemes.hbs `{{or override "corrected"}}`
+    //  helper falls back to the snGradDefault value at render time).
+    schemes: { ddtDefault: 'steadyState', gradDefault: 'Gauss linear', divDefault: 'none', laplacianDefault: 'Gauss linear corrected', interpolationDefault: 'linear', snGradDefault: 'corrected', fieldDivs: {}, fieldLaplacians: {}, fieldSnGrads: {} },
+    solverConfigs: { p: { solver: 'GAMG', tolerance: 1e-7, relTol: 0.01 }, U: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 }, turbulence: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 } },
+    // V1.20 — k-ε turbulence-coefficient seed (OpenFOAM stock
+    //  Cmu 0.09, C1 1.44, C2 1.92, sigmak 1.0, sigmaEps 1.3). Same
+    //  default across all 5 SOLVER_CONTROLS_DEFAULTS entries
+    //  because (a) the seed is solver-agnostic — flipping
+    //  solver/turbulence just keeps the values dormant until the
+    //  user picks kEpsilon — and (b) keeping matching seeds across
+    //  5 entries means flipping back to a previous solver restores
+    //  any kEpsilon-tuning the user did before.
+    turbulenceCoefficients: { Cmu: 0.09, C1: 1.44, C2: 1.92, sigmak: 1.0, sigmaEps: 1.3 },
+    // V1.21 — k-ω SST coefficient seed (OpenFOAM stock Menter 2009
+    //  values: alphaK1 0.85, alphaK2 1.0, alphaOmega1 0.5,
+    //  alphaOmega2 0.856, beta1 0.075, beta2 0.0828, betaStar 0.09,
+    //  C1 2.0, gamma1 5/9, gamma2 7/8, sigmaK 0.6, sigmaOmega 0.5).
+    //  Parallel slot to V1.20's `turbulenceCoefficients` (kEpsilon);
+    //  the form only renders this row when the user picks kOmegaSST,
+    //  so the values stay dormant otherwise. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20's kEpsilon slot. a1 (the Menter limiter) is
+    //  intentionally absent — see KOmegegaSSTCoefficientsSchema
+    //  comment; SpalartAllmaras coefficients are V1.22.
+    turbulenceCoefficientsKOmegaSST: { alphaK1: 0.85, alphaK2: 1.0, alphaOmega1: 0.5, alphaOmega2: 0.856, beta1: 0.075, beta2: 0.0828, betaStar: 0.09, C1: 2.0, gamma1: 0.5555555555, gamma2: 0.875, sigmaK: 0.6, sigmaOmega: 0.5 },
+    // V1.22 — Spalart-Allmaras coefficient seed. OpenFOAM stock
+    //  (1994 + Pirzadeh 1999 cubic ramp: sigmaNut 0.667 = 2/3,
+    //  kappa 0.41 [von Kármán, RANS-universal but OpenFOAM's
+    //  SpalartAllmaras.C reads it from modelCoeffs], Cb1 0.1355,
+    //  Cb2 0.622, Cw1 0.3 [canonical USER INPUT — NOT derived
+    //  from Cb1 / kappa^2 + (1+Cb2) / sigmaNut ≈ 0.281 per
+    //  OpenFOAM's SpalartAllmaras.C source, which explicitly
+    //  reads from modelCoeffs.Cw1], Cw2 0.3 [SA-wall-damping
+    //  secondary coefficient — V1.22 shares this value with the
+    //  OpenFOAM 2.4.x independent re-tuning], Cw3 2.0 [Pirzadeh
+    //  cubic-ramp limiter], Cv1 7.1, Cv2 5.0). Parallel slot to
+    //  V1.20's `turbulenceCoefficients` (kEpsilon) and V1.21's
+    //  `turbulenceCoefficientsKOmegaSST`. The form only renders
+    //  this row when the user picks SpalartAllmaras; values stay
+    //  dormant otherwise. Defaults match all 5 SOLVER_CONTROLS_DEFAULTS
+    //  entries for the same symmetry reason as V1.20/V1.21. The 5
+    //  tripped-SAFvOptions coefficients (At, Bt, ct1, ct2, ct3,
+    //  ct4) are intentionally absent — they require an
+    //  fvOptions::trippedSA entry that the form doesn't surface
+    //  yet (same precedent as V1.21's `a1` deferral for limitK).
+    turbulenceCoefficientsSpalartAllmaras: { sigmaNut: 0.667, kappa: 0.41, Cb1: 0.1355, Cb2: 0.622, Cw1: 0.3, Cw2: 0.06, Cw3: 2.0, Cv1: 7.1, Cv2: 5.0 },
+    // V1.23 — LES sub-grid-scale coefficient seed (OpenFOAM stock
+    //  Smagorinsky 1963 / Lilly 1967 / Nicoud+Ducros 1999 stems:
+    //  C_s 0.2, C_w 0.325).
+    //  Fourth sibling to V1.20's `turbulenceCoefficients` (kEpsilon),
+    //  V1.21's `turbulenceCoefficientsKOmegaSST` (kOmegaSST), and
+    //  V1.22's `turbulenceCoefficientsSpalartAllmaras`. The form
+    //  only renders this row when the user picks Smagorinsky or WALE;
+    //  values stay dormant otherwise. Single-schema design (one
+    //  LESCoefficientsSchema holding both C_s and C_w) keeps the
+    //  parallel slot count to one entry per turbulence-model family,
+    //  mirroring the V1.20-V1.22 kEpsilon / kOmegaSST / SA siblings'
+    //  per-model schema pattern. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20/V1.21/V1.22. Other LES variants (kEqn,
+    //  dynamicSmagorinsky, dynamicLagrangian, SpalartAllmarasDES)
+    //  are deferred to a future V.x.
+    turbulenceCoefficientsLES: { Cs: 0.2, Cw: 0.325 },
+    // V1.24 — k-equation LES coefficient seed (OpenFOAM stock
+    //  Germano 1991 / Lilly 1967: C_k 0.094, C_e1 1.048, C_e2 1.048).
+    //  5th sibling to V1.20–V1.23 RANS / LES slots; one slot per
+    //  LES family. The form only renders this row when the user
+    //  picks kEqn; values stay dormant otherwise. Same default
+    //  across all 5 SOLVER_CONTROLS_DEFAULTS entries for the
+    //  symmetry reason as V1.20/V1.21/V1.22/V1.23. Other LES
+    //  variants (dynamicSmagorinsky / dynamicLagrangian /
+    //  SpalartAllmarasDES / kOmegaSSTDES) deferred to V1.25 /
+    //  V1.26 — dynamic variants have no user-tunable coefficients
+    //  (model derives Cs dynamically from the resolved field),
+    //  and DES variants need a separate alpha-blending slot.
+    turbulenceCoefficientsKEqn: { Ck: 0.094, Ce1: 1.048, Ce2: 1.048 },
+    // V1.25 -- DES shielding coefficient seed (OpenFOAM stock 0.65
+    //  per Shur + Spalart + Strelets 2008). Used by the
+    //  kOmegaSSTDES variant only (SpalartAllmarasDES re-uses SA's
+    //  9-coefficient slot verbatim; the dynamic-Smagorinsky /
+    //  dynamic-Lagrangian pair runs a runtime test-filter
+    //  dynamic procedure with no user coefficients). 5th
+    //  parallel-slot sibling to V1.20's turbulenceCoefficients
+    //  (kEpsilon), V1.21's turbulenceCoefficientsKOmegaSST, V1.22's
+    //  turbulenceCoefficientsSpalartAllmaras, V1.23's
+    //  turbulenceCoefficientsLES, and V1.24's
+    //  turbulenceCoefficientsKEqn.
+    turbulenceCoefficientsCDES: { CDES: 0.65 },
   },
   pimpleFoam: {
+    // V1.9 — pimpleFoam is the only transient solver in the set, and
+    //  viscous high-skew meshes converge faster with a couple of outer
+    //  sweeps. We bump `nOuterCorrectors` from the schema default (1)
+    //  to 2 here so a fresh build of a pimpleFoam case doesn't have
+    //  to remember to dial it up. The user can still override per-
+    //  solver via the Build Case form.
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 2, residualControl: 1e-4, residualControlByField: {} },
+    // V1.11 — PIMPLE solver. OpenFOAM PIMPLE can opt into
+    //  relaxationFactors (typically when nOuterCorrectors>1), but the
+    //  V1.10-era template didn't emit a block. Empty here preserves
+    //  the no-block path; future V.x can flip a per-solver "enable"
+    //  toggle to expose the PIMPLE inner under-relaxation knobs.
+    relaxationFactors: { enabled: false, fields: {}, equations: {} },
+    // V1.19 — adaptiveTimeStep mirror of OpenFOAM stock (transient
+    //  solvers, toggle off by default). Same shape as icoFoam's
+    //  seed above (PIMPLE is transient so the Boolean is observable
+    //  on the form rather than dormant).
+    adaptiveTimeStep: { enabled: false, maxCo: 1 },
+    // V1.12 — PIMPLE is transient (the only transient solver in the
+    //  set besides icoFoam), so ddtDefault stays `Euler`. Spatial
+    //  schemes keep OpenFOAM stock defaults.
+    // V1.15 — interpolation/snGrad stock values, solver-agnostic.
+    // V1.16 — fieldLaplacians stock values (V1.16's per-field
+    //  laplacian override UI is solver-agnostic; one empty seed works
+    //  for all five SOLVER_CONTROLS_DEFAULTS entries).
+    // V1.17 — fieldSnGrads stock values, solver-agnostic.
+    schemes: { ddtDefault: 'Euler', gradDefault: 'Gauss linear', divDefault: 'none', laplacianDefault: 'Gauss linear corrected', interpolationDefault: 'linear', snGradDefault: 'corrected', fieldDivs: {}, fieldLaplacians: {}, fieldSnGrads: {} },
+    solverConfigs: { p: { solver: 'GAMG', tolerance: 1e-7, relTol: 0.01 }, U: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 }, turbulence: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 } },
+    // V1.20 — k-ε turbulence-coefficient seed (OpenFOAM stock
+    //  Cmu 0.09, C1 1.44, C2 1.92, sigmak 1.0, sigmaEps 1.3). Same
+    //  default across all 5 SOLVER_CONTROLS_DEFAULTS entries
+    //  because (a) the seed is solver-agnostic — flipping
+    //  solver/turbulence just keeps the values dormant until the
+    //  user picks kEpsilon — and (b) keeping matching seeds across
+    //  5 entries means flipping back to a previous solver restores
+    //  any kEpsilon-tuning the user did before.
+    turbulenceCoefficients: { Cmu: 0.09, C1: 1.44, C2: 1.92, sigmak: 1.0, sigmaEps: 1.3 },
+    // V1.21 — k-ω SST coefficient seed (OpenFOAM stock Menter 2009
+    //  values: alphaK1 0.85, alphaK2 1.0, alphaOmega1 0.5,
+    //  alphaOmega2 0.856, beta1 0.075, beta2 0.0828, betaStar 0.09,
+    //  C1 2.0, gamma1 5/9, gamma2 7/8, sigmaK 0.6, sigmaOmega 0.5).
+    //  Parallel slot to V1.20's `turbulenceCoefficients` (kEpsilon);
+    //  the form only renders this row when the user picks kOmegaSST,
+    //  so the values stay dormant otherwise. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20's kEpsilon slot. a1 (the Menter limiter) is
+    //  intentionally absent — see KOmegegaSSTCoefficientsSchema
+    //  comment; SpalartAllmaras coefficients are V1.22.
+    turbulenceCoefficientsKOmegaSST: { alphaK1: 0.85, alphaK2: 1.0, alphaOmega1: 0.5, alphaOmega2: 0.856, beta1: 0.075, beta2: 0.0828, betaStar: 0.09, C1: 2.0, gamma1: 0.5555555555, gamma2: 0.875, sigmaK: 0.6, sigmaOmega: 0.5 },
+    turbulenceCoefficientsSpalartAllmaras: { sigmaNut: 0.667, kappa: 0.41, Cb1: 0.1355, Cb2: 0.622, Cw1: 0.3, Cw2: 0.06, Cw3: 2.0, Cv1: 7.1, Cv2: 5.0 },
+    turbulenceCoefficientsLES: { Cs: 0.2, Cw: 0.325 },
+    turbulenceCoefficientsKEqn: { Ck: 0.094, Ce1: 1.048, Ce2: 1.048 },
+    turbulenceCoefficientsCDES: { CDES: 0.65 },
     solver: "pimpleFoam",
     turbulence: "laminar",
     deltaT: 1e-4,
@@ -370,6 +680,8 @@ const SOLVER_CONTROLS_DEFAULTS: SolverControlsBySolver = {
     cores: 4,
     nu: 1e-5,
     initialConditions: { velocity: { x: 0, y: 0, z: 0 }, pressure: 0 },
+    // V1.8 — transient solver: same threshold/streak as icoFoam.
+    converge: { enabled: true, maxInitialResidual: 1e-3, stableIterations: 50, autoStop: false },
   },
   potentialFoam: {
     solver: "potentialFoam",
@@ -384,6 +696,116 @@ const SOLVER_CONTROLS_DEFAULTS: SolverControlsBySolver = {
     //  users get a useful starting field for typical external-flow cases
     //  without having to overwrite the field in the UI.
     initialConditions: { velocity: { x: 1, y: 0, z: 0 }, pressure: 0 },
+    // V1.8 — potentialFoam runs a fixed end-time to converge the pressure
+    //  field; it doesn't converge "in the steady sense". Detector disabled
+    //  by default — users who really want it can opt in via PatchPanel.
+    converge: { enabled: false, maxInitialResidual: 1e-3, stableIterations: 50, autoStop: false },
+    // V1.9 — potentialFoam uses PISO-style corrector counts; the
+    //  residualControl tolerance is irrelevant (the algorithm doesn't
+    //  emit a SIMPLE-style residualControl block) so the value is just
+    //  carried verbatim for symmetry with the other solvers' shape.
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    // V1.11 — potentialFoam runs PISO-style correctors on a SIMPLE-like
+    //  outer sweep; OpenFOAM's built-in defaults for the SIMPLE shape
+    //  apply here (p=0.3, U=0.7). Empty overrides render identically.
+    relaxationFactors: { enabled: false, fields: { p: 0.3 }, equations: { U: 0.7 } },
+    // V1.19 — adaptiveTimeStep mirror of OpenFOAM stock for SIMPLE-family
+    //  solvers (simpleFoam/buoyantSimpleFoam/potentialFoam). Toggle off
+    //  by default; OpenFOAM ignores the field entirely for steady
+    //  algorithms so the value is dormant (case.ts precomputes
+    //  `emitAdaptiveTimeStep` to short-circuit the controlDict template).
+    adaptiveTimeStep: { enabled: false, maxCo: 1 },
+    // V1.12 — potentialFoam is a steady-state preconditioner
+    //  (potential flow), so ddtDefault stays `steadyState`.
+    // V1.15 — interpolation/snGrad stock values, solver-agnostic.
+    // V1.16 — fieldLaplacians stock values, solver-agnostic.
+    // V1.17 — fieldSnGrads stock values, solver-agnostic.
+    schemes: { ddtDefault: 'steadyState', gradDefault: 'Gauss linear', divDefault: 'none', laplacianDefault: 'Gauss linear corrected', interpolationDefault: 'linear', snGradDefault: 'corrected', fieldDivs: {}, fieldLaplacians: {}, fieldSnGrads: {} },
+    solverConfigs: { p: { solver: 'GAMG', tolerance: 1e-7, relTol: 0.01 }, U: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 }, turbulence: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 } },
+    // V1.20 — k-ε turbulence-coefficient seed (OpenFOAM stock
+    //  Cmu 0.09, C1 1.44, C2 1.92, sigmak 1.0, sigmaEps 1.3). Same
+    //  default across all 5 SOLVER_CONTROLS_DEFAULTS entries
+    //  because (a) the seed is solver-agnostic — flipping
+    //  solver/turbulence just keeps the values dormant until the
+    //  user picks kEpsilon — and (b) keeping matching seeds across
+    //  5 entries means flipping back to a previous solver restores
+    //  any kEpsilon-tuning the user did before.
+    turbulenceCoefficients: { Cmu: 0.09, C1: 1.44, C2: 1.92, sigmak: 1.0, sigmaEps: 1.3 },
+    // V1.21 — k-ω SST coefficient seed (OpenFOAM stock Menter 2009
+    //  values: alphaK1 0.85, alphaK2 1.0, alphaOmega1 0.5,
+    //  alphaOmega2 0.856, beta1 0.075, beta2 0.0828, betaStar 0.09,
+    //  C1 2.0, gamma1 5/9, gamma2 7/8, sigmaK 0.6, sigmaOmega 0.5).
+    //  Parallel slot to V1.20's `turbulenceCoefficients` (kEpsilon);
+    //  the form only renders this row when the user picks kOmegaSST,
+    //  so the values stay dormant otherwise. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20's kEpsilon slot. a1 (the Menter limiter) is
+    //  intentionally absent — see KOmegegaSSTCoefficientsSchema
+    //  comment; SpalartAllmaras coefficients are V1.22.
+    turbulenceCoefficientsKOmegaSST: { alphaK1: 0.85, alphaK2: 1.0, alphaOmega1: 0.5, alphaOmega2: 0.856, beta1: 0.075, beta2: 0.0828, betaStar: 0.09, C1: 2.0, gamma1: 0.5555555555, gamma2: 0.875, sigmaK: 0.6, sigmaOmega: 0.5 },
+    // V1.22 — Spalart-Allmaras coefficient seed. OpenFOAM stock
+    //  (1994 + Pirzadeh 1999 cubic ramp: sigmaNut 0.667 = 2/3,
+    //  kappa 0.41 [von Kármán, RANS-universal but OpenFOAM's
+    //  SpalartAllmaras.C reads it from modelCoeffs], Cb1 0.1355,
+    //  Cb2 0.622, Cw1 0.3 [canonical USER INPUT — NOT derived
+    //  from Cb1 / kappa^2 + (1+Cb2) / sigmaNut ≈ 0.281 per
+    //  OpenFOAM's SpalartAllmaras.C source, which explicitly
+    //  reads from modelCoeffs.Cw1], Cw2 0.3 [SA-wall-damping
+    //  secondary coefficient — V1.22 shares this value with the
+    //  OpenFOAM 2.4.x independent re-tuning], Cw3 2.0 [Pirzadeh
+    //  cubic-ramp limiter], Cv1 7.1, Cv2 5.0). Parallel slot to
+    //  V1.20's `turbulenceCoefficients` (kEpsilon) and V1.21's
+    //  `turbulenceCoefficientsKOmegaSST`. The form only renders
+    //  this row when the user picks SpalartAllmaras; values stay
+    //  dormant otherwise. Defaults match all 5 SOLVER_CONTROLS_DEFAULTS
+    //  entries for the same symmetry reason as V1.20/V1.21. The 5
+    //  tripped-SAFvOptions coefficients (At, Bt, ct1, ct2, ct3,
+    //  ct4) are intentionally absent — they require an
+    //  fvOptions::trippedSA entry that the form doesn't surface
+    //  yet (same precedent as V1.21's `a1` deferral for limitK).
+    turbulenceCoefficientsSpalartAllmaras: { sigmaNut: 0.667, kappa: 0.41, Cb1: 0.1355, Cb2: 0.622, Cw1: 0.3, Cw2: 0.06, Cw3: 2.0, Cv1: 7.1, Cv2: 5.0 },
+    // V1.23 — LES sub-grid-scale coefficient seed (OpenFOAM stock
+    //  Smagorinsky 1963 / Lilly 1967 / Nicoud+Ducros 1999 stems:
+    //  C_s 0.2, C_w 0.325).
+    //  Fourth sibling to V1.20's `turbulenceCoefficients` (kEpsilon),
+    //  V1.21's `turbulenceCoefficientsKOmegaSST` (kOmegaSST), and
+    //  V1.22's `turbulenceCoefficientsSpalartAllmaras`. The form
+    //  only renders this row when the user picks Smagorinsky or WALE;
+    //  values stay dormant otherwise. Single-schema design (one
+    //  LESCoefficientsSchema holding both C_s and C_w) keeps the
+    //  parallel slot count to one entry per turbulence-model family,
+    //  mirroring the V1.20-V1.22 kEpsilon / kOmegaSST / SA siblings'
+    //  per-model schema pattern. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20/V1.21/V1.22. Other LES variants (kEqn,
+    //  dynamicSmagorinsky, dynamicLagrangian, SpalartAllmarasDES)
+    //  are deferred to a future V.x.
+    turbulenceCoefficientsLES: { Cs: 0.2, Cw: 0.325 },
+    // V1.24 — k-equation LES coefficient seed (OpenFOAM stock
+    //  Germano 1991 / Lilly 1967: C_k 0.094, C_e1 1.048, C_e2 1.048).
+    //  5th sibling to V1.20–V1.23 RANS / LES slots; one slot per
+    //  LES family. The form only renders this row when the user
+    //  picks kEqn; values stay dormant otherwise. Same default
+    //  across all 5 SOLVER_CONTROLS_DEFAULTS entries for the
+    //  symmetry reason as V1.20/V1.21/V1.22/V1.23. Other LES
+    //  variants (dynamicSmagorinsky / dynamicLagrangian /
+    //  SpalartAllmarasDES / kOmegaSSTDES) deferred to V1.25 /
+    //  V1.26 — dynamic variants have no user-tunable coefficients
+    //  (model derives Cs dynamically from the resolved field),
+    //  and DES variants need a separate alpha-blending slot.
+    turbulenceCoefficientsKEqn: { Ck: 0.094, Ce1: 1.048, Ce2: 1.048 },
+    // V1.25 -- DES shielding coefficient seed (OpenFOAM stock 0.65
+    //  per Shur + Spalart + Strelets 2008). Used by the
+    //  kOmegaSSTDES variant only (SpalartAllmarasDES re-uses SA's
+    //  9-coefficient slot verbatim; the dynamic-Smagorinsky /
+    //  dynamic-Lagrangian pair runs a runtime test-filter
+    //  dynamic procedure with no user coefficients). 5th
+    //  parallel-slot sibling to V1.20's turbulenceCoefficients
+    //  (kEpsilon), V1.21's turbulenceCoefficientsKOmegaSST, V1.22's
+    //  turbulenceCoefficientsSpalartAllmaras, V1.23's
+    //  turbulenceCoefficientsLES, and V1.24's
+    //  turbulenceCoefficientsKEqn.
+    turbulenceCoefficientsCDES: { CDES: 0.65 },
   },
   buoyantSimpleFoam: {
     solver: "buoyantSimpleFoam",
@@ -395,8 +817,109 @@ const SOLVER_CONTROLS_DEFAULTS: SolverControlsBySolver = {
     cores: 4,
     nu: 1e-5,
     initialConditions: { velocity: { x: 0, y: 0, z: 0 }, pressure: 0 },
+    // V1.8 — steady solver: tighter threshold (1e-4), longer streak (200).
+    converge: { enabled: true, maxInitialResidual: 1e-4, stableIterations: 200, autoStop: false },
+    // V1.9 — SIMPLE-style (no outer/corrector loop). residualControl=1e-4
+    //  matches simpleFoam; the same tolerance applies to the energy
+    //  field (T) implied by buoyantSimpleFoam, even though the user's
+    //  template only emits p/U/(k|epsilon|omega|nuTilda) keys today.
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    relaxationFactors: { enabled: false, fields: { p: 0.3, T: 0.7 }, equations: { U: 0.7 } },
+    adaptiveTimeStep: { enabled: false, maxCo: 1 },
+    // V1.12 — buoyantSimpleFoam is steady + carries an energy field T.
+    //  ddtDefault MUST be `steadyState`. Spatial schemes stock.
+    // V1.15 — interpolation/snGrad stock values, solver-agnostic.
+    // V1.16 — fieldLaplacians stock values, solver-agnostic.
+    // V1.17 — fieldSnGrads stock values, solver-agnostic.
+    schemes: { ddtDefault: 'steadyState', gradDefault: 'Gauss linear', divDefault: 'none', laplacianDefault: 'Gauss linear corrected', interpolationDefault: 'linear', snGradDefault: 'corrected', fieldDivs: {}, fieldLaplacians: {}, fieldSnGrads: {} },
+    solverConfigs: { p: { solver: 'GAMG', tolerance: 1e-7, relTol: 0.01 }, U: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 }, turbulence: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 } },
+    // V1.20 — k-ε turbulence-coefficient seed (OpenFOAM stock
+    //  Cmu 0.09, C1 1.44, C2 1.92, sigmak 1.0, sigmaEps 1.3). Same
+    //  default across all 5 SOLVER_CONTROLS_DEFAULTS entries
+    //  because (a) the seed is solver-agnostic — flipping
+    //  solver/turbulence just keeps the values dormant until the
+    //  user picks kEpsilon — and (b) keeping matching seeds across
+    //  5 entries means flipping back to a previous solver restores
+    //  any kEpsilon-tuning the user did before.
+    turbulenceCoefficients: { Cmu: 0.09, C1: 1.44, C2: 1.92, sigmak: 1.0, sigmaEps: 1.3 },
+    // V1.21 — k-ω SST coefficient seed (OpenFOAM stock Menter 2009
+    //  values: alphaK1 0.85, alphaK2 1.0, alphaOmega1 0.5,
+    //  alphaOmega2 0.856, beta1 0.075, beta2 0.0828, betaStar 0.09,
+    //  C1 2.0, gamma1 5/9, gamma2 7/8, sigmaK 0.6, sigmaOmega 0.5).
+    //  Parallel slot to V1.20's `turbulenceCoefficients` (kEpsilon);
+    //  the form only renders this row when the user picks kOmegaSST,
+    //  so the values stay dormant otherwise. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20's kEpsilon slot. a1 (the Menter limiter) is
+    //  intentionally absent — see KOmegegaSSTCoefficientsSchema
+    //  comment; SpalartAllmaras coefficients are V1.22.
+    turbulenceCoefficientsKOmegaSST: { alphaK1: 0.85, alphaK2: 1.0, alphaOmega1: 0.5, alphaOmega2: 0.856, beta1: 0.075, beta2: 0.0828, betaStar: 0.09, C1: 2.0, gamma1: 0.5555555555, gamma2: 0.875, sigmaK: 0.6, sigmaOmega: 0.5 },
+    // V1.22 — Spalart-Allmaras coefficient seed. OpenFOAM stock
+    //  (1994 + Pirzadeh 1999 cubic ramp: sigmaNut 0.667 = 2/3,
+    //  kappa 0.41 [von Kármán, RANS-universal but OpenFOAM's
+    //  SpalartAllmaras.C reads it from modelCoeffs], Cb1 0.1355,
+    //  Cb2 0.622, Cw1 0.3 [canonical USER INPUT — NOT derived
+    //  from Cb1 / kappa^2 + (1+Cb2) / sigmaNut ≈ 0.281 per
+    //  OpenFOAM's SpalartAllmaras.C source, which explicitly
+    //  reads from modelCoeffs.Cw1], Cw2 0.3 [SA-wall-damping
+    //  secondary coefficient — V1.22 shares this value with the
+    //  OpenFOAM 2.4.x independent re-tuning], Cw3 2.0 [Pirzadeh
+    //  cubic-ramp limiter], Cv1 7.1, Cv2 5.0). Parallel slot to
+    //  V1.20's `turbulenceCoefficients` (kEpsilon) and V1.21's
+    //  `turbulenceCoefficientsKOmegaSST`. The form only renders
+    //  this row when the user picks SpalartAllmaras; values stay
+    //  dormant otherwise. Defaults match all 5 SOLVER_CONTROLS_DEFAULTS
+    //  entries for the same symmetry reason as V1.20/V1.21. The 5
+    //  tripped-SAFvOptions coefficients (At, Bt, ct1, ct2, ct3,
+    //  ct4) are intentionally absent — they require an
+    //  fvOptions::trippedSA entry that the form doesn't surface
+    //  yet (same precedent as V1.21's `a1` deferral for limitK).
+    turbulenceCoefficientsSpalartAllmaras: { sigmaNut: 0.667, kappa: 0.41, Cb1: 0.1355, Cb2: 0.622, Cw1: 0.3, Cw2: 0.06, Cw3: 2.0, Cv1: 7.1, Cv2: 5.0 },
+    // V1.23 — LES sub-grid-scale coefficient seed (OpenFOAM stock
+    //  Smagorinsky 1963 / Lilly 1967 / Nicoud+Ducros 1999 stems:
+    //  C_s 0.2, C_w 0.325).
+    //  Fourth sibling to V1.20's `turbulenceCoefficients` (kEpsilon),
+    //  V1.21's `turbulenceCoefficientsKOmegaSST` (kOmegaSST), and
+    //  V1.22's `turbulenceCoefficientsSpalartAllmaras`. The form
+    //  only renders this row when the user picks Smagorinsky or WALE;
+    //  values stay dormant otherwise. Single-schema design (one
+    //  LESCoefficientsSchema holding both C_s and C_w) keeps the
+    //  parallel slot count to one entry per turbulence-model family,
+    //  mirroring the V1.20-V1.22 kEpsilon / kOmegaSST / SA siblings'
+    //  per-model schema pattern. Defaults match all 5
+    //  SOLVER_CONTROLS_DEFAULTS entries for the same symmetry reason
+    //  as V1.20/V1.21/V1.22. Other LES variants (kEqn,
+    //  dynamicSmagorinsky, dynamicLagrangian, SpalartAllmarasDES)
+    //  are deferred to a future V.x.
+    turbulenceCoefficientsLES: { Cs: 0.2, Cw: 0.325 },
+    // V1.24 — k-equation LES coefficient seed (OpenFOAM stock
+    //  Germano 1991 / Lilly 1967: C_k 0.094, C_e1 1.048, C_e2 1.048).
+    //  5th sibling to V1.20–V1.23 RANS / LES slots; one slot per
+    //  LES family. The form only renders this row when the user
+    //  picks kEqn; values stay dormant otherwise. Same default
+    //  across all 5 SOLVER_CONTROLS_DEFAULTS entries for the
+    //  symmetry reason as V1.20/V1.21/V1.22/V1.23. Other LES
+    //  variants (dynamicSmagorinsky / dynamicLagrangian /
+    //  SpalartAllmarasDES / kOmegaSSTDES) deferred to V1.25 /
+    //  V1.26 — dynamic variants have no user-tunable coefficients
+    //  (model derives Cs dynamically from the resolved field),
+    //  and DES variants need a separate alpha-blending slot.
+    turbulenceCoefficientsKEqn: { Ck: 0.094, Ce1: 1.048, Ce2: 1.048 },
+    // V1.25 -- DES shielding coefficient seed (OpenFOAM stock 0.65
+    //  per Shur + Spalart + Strelets 2008). Used by the
+    //  kOmegaSSTDES variant only (SpalartAllmarasDES re-uses SA's
+    //  9-coefficient slot verbatim; the dynamic-Smagorinsky /
+    //  dynamic-Lagrangian pair runs a runtime test-filter
+    //  dynamic procedure with no user coefficients). 5th
+    //  parallel-slot sibling to V1.20's turbulenceCoefficients
+    //  (kEpsilon), V1.21's turbulenceCoefficientsKOmegaSST, V1.22's
+    //  turbulenceCoefficientsSpalartAllmaras, V1.23's
+    //  turbulenceCoefficientsLES, and V1.24's
+    //  turbulenceCoefficientsKEqn.
+    turbulenceCoefficientsCDES: { CDES: 0.65 },
   },
 };
+}
 
 export const useGeometryStore = create<State & Actions>((set, get) => ({
   ...initial,
@@ -724,9 +1247,13 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
       solver: opts?.solver ?? controls.solver,
       // V1.6 — turbulence model flows through `solverControlsBySolver[formSolver]`
       // (laminar default; user can opt into kEpsilon / kOmegaSST / SpalartAllmaras
-      // from the dropdown). `momentumTransport.hbs` and `fvSolution.hbs` already
-      // have if/else branches that read this field, so the picker is the only
-      // missing piece — no template changes required.
+      // from the dropdown). V1.23 lifts Smagorinsky + WALE into the dropdown
+      // (replacing the V0.6 'LES' placeholder); `momentumTransport.hbs` has
+      // matching if-branches that read `turbulenceCoefficientsLES.Cs` (Smagorinsky)
+      // or `turbulenceCoefficientsLES.Cw` (WALE). `fvSolution.hbs` already
+      // has if/else branches that read this field, so the picker is the only
+      // missing piece — no template changes required beyond V1.23's LES branch
+      // additions.
       turbulence: controls.turbulence,
       endTime: opts?.endTime ?? controls.endTime,
       deltaT: controls.deltaT,
@@ -738,6 +1265,109 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
       //  preconditioner starts from a useful guess. User can override either
       //  per-solver in the Build Case form.
       initialConditions: controls.initialConditions,
+      // V1.9 — numerical corrector counts + SIMPLE residual tolerance.
+      //  Sourced from the active solver's `controls.numerics`. Lives
+      //  on the Domain (so it roundtrips through .cfd-app-state.json
+      //  and reaches the fvSolution template unmodified); the per-
+      //  solver copy is the UI source of truth.
+      numerics: controls.numerics,
+      // V1.11 — SIMPLE relaxation-factor overrides. Same merge
+      //  pattern as `numerics` above; lives on the Domain so the
+      //  fvSolution template reads `{{or relaxationFactors.X
+      //  default}}` directly. Empty maps for PIMPLE/PISO solvers
+      //  cause the template to skip emitting the relaxationFactors
+      //  block entirely, preserving pre-V1.11 behavior.
+      relaxationFactors: controls.relaxationFactors,
+      // V1.18d — matrix-solver configurations. Same merge pattern
+      //  as `relaxationFactors` above; lives on the Domain so the
+      //  fvSolution.hbs template reads `{{solverConfigs.p.solver}}`
+      //  directly. Solver-agnostic defaults (no per-solver diff per
+      //  the V1.18 designer recommendation); seed values match the
+      //  V1.17 hard-coded template verbatim so pre-V1.18d cases
+      //  re-render identically.
+      solverConfigs: controls.solverConfigs,
+      // V1.19 — adaptive time-step toggle. Same merge pattern as
+      //  V1.18d's `solverConfigs`: lives on both SolverControlsSchema
+      //  (per-solver, UI source of truth) and DomainSchema (so
+      //  controlDict.hbs can read `{{#if emitAdaptiveTimeStep}}…{{/if}}`
+      //  directly). `case.ts` precomputes the `emitAdaptiveTimeStep`
+      //  boolean (true only for pimpleFoam + icoFoam + `enabled`),
+      //  short-circuiting SIMPLE-family solvers so the controlDict
+      //  always emits OpenFOAM stock `adjustTimeStep no;` for steady
+      //  algorithms regardless of the form's displayed toggle.
+      adaptiveTimeStep: controls.adaptiveTimeStep,
+      // V1.20 — k-ε turbulence-coefficient block. Same two-sided
+      //  mirror as `solverConfigs` above: seeded per-solver in
+      //  SOLVER_CONTROLS_DEFAULTS via the same shape, then merged
+      //  into the Domain for momentumTransport.hbs to read
+      //  `{{turbulenceCoefficients.Cmu}}` etc. The momentumTransport
+      //  template gates on `turbulence === 'kEpsilon'` so non-RANS
+      //  schemes never see the render of the coefficient sub-block
+      //  in the file. Defaults are OpenFOAM stock so legacy .cfd-
+      //  app-state.json files parse identically via Zod defaults.
+      turbulenceCoefficients: controls.turbulenceCoefficients,
+      // V1.21 — k-ω SST coefficient block. Parallel slot to V1.20's
+      //  `turbulenceCoefficients` (kEpsilon). Same two-sided-on-
+      //  Domain-and-SolverControls pattern, named-reference to
+      //  KOmegegaSSTCoefficientsSchema. The momentumTransport
+      //  template gates on `turbulence === 'kOmegaSST'` and reads
+      //  `{{turbulenceCoefficientsKOmegaSST.alphaK1}}` etc. Defaults
+      //  are OpenFOAM Menter 2009 stock; legacy .cfd-app-state.json
+      //  files parse with the stock defaults via the Zod default chain.
+      turbulenceCoefficientsKOmegaSST: controls.turbulenceCoefficientsKOmegaSST,
+      // V1.22 — Spalart-Allmaras coefficient block. Parallel slot to
+      //  V1.20's `turbulenceCoefficients` (kEpsilon) and V1.21's
+      //  `turbulenceCoefficientsKOmegaSST` (kOmegaSST). Same two-
+      //  sided-on-Domain-and-SolverControls pattern, named-reference
+      //  to SpalartAllmarasCoefficientsSchema. The momentumTransport
+      //  template gates on `turbulence === 'SpalartAllmaras'` and
+      //  reads `{{turbulenceCoefficientsSpalartAllmaras.Cb1}}` etc.
+      //  Defaults are OpenFOAM stock (1994 + Pirzadeh 1999 cubic
+      //  ramp); legacy .cfd-app-state.json files parse with the stock
+      //  defaults via the Zod default chain. The 5 tripped-SAFvOptions
+      //  coefficients (At, Bt, ct1, ct2, ct3, ct4) are deferred to
+      //  the V.x that lifts general fvOptions support — same caveat
+      //  as V1.21's `a1` for limitK.
+      turbulenceCoefficientsSpalartAllmaras: controls.turbulenceCoefficientsSpalartAllmaras,
+      // V1.23 — LES sub-grid-scale coefficient block. Fourth sibling to
+      //  V1.20 / V1.21 / V1.22's RANS slots; one parallel slot
+      //  (`turbulenceCoefficientsLES`) carrying both `Cs` (Smagorinsky)
+      //  and `Cw` (WALE) on the same slot — the form's active sub-block
+      //  (gated by `formValues.turbulence === 'Smagorinsky' | 'WALE'`)
+      //  determines which coefficient is written. The
+      //  momentumTransport template emits `Cs X;` for Smagorinsky and
+      //  `Cw Y;` for WALE in the respective `{{#if}}` branches. The
+      //  simulationType line also branches (RAS for RANS models,
+      //  LES for Smagorinsky / WALE / kEqn) — the `isLES` Handlebars
+      //  helper registered in case.ts handles the conditional
+      //  (single source of truth for the LES roster; add new LES
+      //  variants to the array there). Defaults are OpenFOAM stock
+      //  (Smagorinsky 1963 / Lilly 1967 / Nicoud+Ducros 1999 stems);
+      //  legacy .cfd-app-state.json files parse with the stock
+      //  defaults via the Zod default chain.
+      turbulenceCoefficientsLES: controls.turbulenceCoefficientsLES,
+      // V1.24 — k-equation LES coefficient block. 5th sibling to
+      //  V1.20–V1.23 slots; separate parallel slot
+      //  (`turbulenceCoefficientsKEqn`) because the kEqn coefficient
+      //  family (Ck / Ce1 / Ce2) is structurally distinct from
+      //  Smagorinsky / WALE's single-coefficient pattern. The form
+      //  only renders this row when the user picks kEqn; values
+      //  stay dormant otherwise. The momentumTransport template
+      //  emits `modelCoeffs { Ck X; Ce1 Y; Ce2 Z; }` from the model
+      //  block. Other LES variants (dynamicSmagorinsky /
+      //  dynamicLagrangian / SpalartAllmarasDES / kOmegaSSTDES)
+      //  deferred to V1.25 / V1.26.
+      turbulenceCoefficientsKEqn: controls.turbulenceCoefficientsKEqn,
+      turbulenceCoefficientsCDES: controls.turbulenceCoefficientsCDES,
+      // V1.12 — fvSchemes `default` selectors. Same merge pattern
+      //  as `numerics` / `relaxationFactors` above; lives on the
+      //  Domain so the fvSchemes.hbs template reads `{{schemes.X}}`
+      //  directly. Per-solver seed flips ddtDefault to `steadyState`
+      //  for steady solvers (simpleFoam / buoyantSimpleFoam /
+      //  potentialFoam) via SOLVER_CONTROLS_DEFAULTS, so a builder
+      //  selecting any of those solvers here will write the
+      //  correct steady-state ddt line.
+      schemes: controls.schemes,
       cores: opts?.cores ?? controls.cores,
       patches: state.patches.map((p) => ({ name: p.name, triangleCount: p.triangleCount })),
       bbox,
@@ -875,6 +1505,8 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
       recentLogs: [],
       lastResidual: null,
       residualHistory: [],
+      // V1.8 — clear any stale convergence badge from a previous run.
+      lastConvergence: null,
       // V1.1: clear any stale results from a previous run on the same case so
       // the panel doesn't keep showing numbers from a prior solve.
       resultsAvailableTimes: [],
@@ -893,6 +1525,23 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
         bashrc: state.bashrc,
         cores: state.cores,
         solver: domain.solver,
+        // V1.8 review-fix #1 — forward the convergence detector config
+        //  (sourced from `state.solverControlsBySolver[formSolver].converge`)
+        //  so the runner's makeConvergenceChecker receives the
+        //  threshold / streak / autoStop and can fire 'converged'
+        //  accordingly. Without this line the IPC schema validates
+        //  but the detector sees `undefined` and runs disabled —
+        //  V1.8 effectively dead in production.
+        //
+        //  V1.30 — payload key is `convergence:` (NOT `converge:`) to
+        //  match the Zod-parsed key in `src/main/ipc/index.ts`'s
+        //  `runStart` handler. Rendering-side aliasing doesn't
+        //  survive Zod's `z.object({...}).parse(args)` because Zod
+        //  silently strips unknown keys, so the V1.30 first-pass
+        //  rename missed the IPC schema. The renderer-side
+        //  `state.solverControlsBySolver[solver].converge` (the
+        //  SolverControlsSchema key) is unchanged.
+        convergence: state.solverControlsBySolver[state.formSolver].converge,
       });
       if (!result.ok) {
         set({
@@ -941,6 +1590,9 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
       recentLogs: [],
       lastResidual: null,
       residualHistory: [],
+      // V1.8 — clear the convergence badge when the user dismisses the
+      //  run strip (otherwise it would persist until the next run start).
+      lastConvergence: null,
     });
   },
 
@@ -963,7 +1615,7 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
   setRunPhase(phase, message, runId) {
     const cur = get();
     if (runId && cur.runId !== runId) return;
-    const isFinal = phase === "done" || phase === "error" || phase === "cancelled";
+    const isFinal = phase === "done" || phase === "converged" || phase === "error" || phase === "cancelled";
     // Status policy:
     //   • error    \u2014 always override with red so the failure is loud.
     //   • mid-run  \u2014 keep status in `loading` but reflect the current phase so
@@ -979,16 +1631,27 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
     } else if (cur.status.kind === "loading") {
       nextStatus = { kind: "ready", message: message ?? phaseMessage(phase) };
     }
+    // V1.8 — stamp the convergence timestamp whenever the detector
+    //  fires, so StatusBar / PatchPanel can render a "Converged at t=X"
+    //  badge that survives the phase pill moving past 'converged' to a
+    //  later stage (reconstructing / converting). We snapshot from
+    //  `lastResidual.time` (most recent residual the broadcaster pushed).
+    const nextLastConvergence =
+      phase === "converged"
+        ? { atTime: cur.lastResidual?.time ?? 0, atMs: Date.now() }
+        : cur.lastConvergence;
     set({
       runPhase: phase,
       status: nextStatus,
       isRunning: !isFinal,
       isStopping: false,
+      lastConvergence: nextLastConvergence,
     });
-    // V1.1: when a run lands cleanly on 'done', auto-load the results panel
-    // for the active case. We deliberately skip 'error' (solver likely bailed
-    // before writing valid <time>/ dirs) and 'cancelled'.
-    if (phase === "done" && cur.activeCaseDir) {
+    // V1.1 (extended in V1.8): when a run lands cleanly on 'done' or
+    //  'converged', auto-load the results panel for the active case. We
+    //  deliberately skip 'error' (solver likely bailed before writing
+    //  valid <time>/ dirs) and 'cancelled'.
+    if ((phase === "done" || phase === "converged") && cur.activeCaseDir) {
       void get().loadResults(cur.activeCaseDir);
     }
   },
@@ -1004,6 +1667,14 @@ export const useGeometryStore = create<State & Actions>((set, get) => ({
       ? [...cur.residualHistory.slice(-(MAX_RESIDUAL_POINTS - 1)), sample]
       : [...cur.residualHistory, sample];
     set({ lastResidual: sample, residualHistory: next });
+  },
+
+  // V1.8 — informational stamp. Called from setRunPhase when the
+  //  incoming phase is 'converged'. Idempotent: re-setting just
+  //  refreshes `atMs` to the new Date.now() (so the badge updates
+  //  if the detector were to fire twice in one run — extremely rare).
+  setLastConvergence(atTime: number) {
+    set({ lastConvergence: { atTime, atMs: Date.now() } });
   },
 
   // ---------------- Settings slice (V0.9) ----------------

@@ -17,39 +17,134 @@ FoamFile
 
 ddtSchemes
 {
-    default         Euler;
+    // V1.12 — pulled from Domain.schemes.ddtDefault so the user can
+    //  switch between `steadyState` (SIMPLE solvers) and `Euler` /
+    //  `CrankNicolson 0.9` / etc. (transient solvers) without leaving
+    //  the app. Per-solver defaults are seeded in SOLVER_CONTROLS_DEFAULTS
+    //  — steady solvers pick `steadyState`, transient solvers pick `Euler`.
+    default         {{schemes.ddtDefault}};
 }
 
 gradSchemes
 {
-    default         Gauss linear;
+    // V1.12 — pulled from Domain.schemes.gradDefault. OpenFOAM stock
+    //  incompressible default is `Gauss linear`; alternatives
+    //  (`Gauss linearUpwind`, `leastSquares`, etc.) are stable
+    //  pull-downs for mesh-quality workarounds.
+    default         {{schemes.gradDefault}};
 }
 
 divSchemes
 {
-    default         none;
-    div(phi,U)      Gauss linearUpwind grad(U);
-    div(phi,k)      Gauss linearUpwind grad(k);
-    div(phi,epsilon) Gauss linearUpwind grad(epsilon);
-    div(phi,omega)  Gauss linearUpwind grad(omega);
-    div(phi,nut)    Gauss linearUpwind grad(nut);
-    div(phi,nuTilda) Gauss linearUpwind grad(nuTilda);
+    default         {{schemes.divDefault}};
+    // V1.12 — per-field divergence overrides (linearUpwind with a
+    //  specified gradient field) stay hard-coded for V1.12 because
+    //  the second interpolated argument varies per field. A future
+    //  V.x can lift these into the UI; for V1.12 only the `default`
+    //  selector is user-tunable.
+    // V1.13 — per-field divergence discretization schemes are now
+    //  user-tunable. Empty overrides fall back to OpenFOAM's stock
+    //  `Gauss linearUpwind` prefix; the second interpolated argument
+    //  (`grad(X)`) stays hard-coded because it always matches the
+    //  field name in OpenFOAM's incompressible template. Switching
+    //  div(phi,U) from `linearUpwind` to `QUICK` or `MUSCL` for
+    //  viscous accuracy, or back to `linear` for less diffusive
+    //  behavior on coarse meshes, is now a one-click change.
+    div(phi,U)      {{or schemes.fieldDivs.div_phi_U "Gauss linearUpwind"}} grad(U);
+    div(phi,k)      {{or schemes.fieldDivs.div_phi_k "Gauss linearUpwind"}} grad(k);
+    div(phi,epsilon) {{or schemes.fieldDivs.div_phi_epsilon "Gauss linearUpwind"}} grad(epsilon);
+    div(phi,omega)  {{or schemes.fieldDivs.div_phi_omega "Gauss linearUpwind"}} grad(omega);
+    div(phi,nut)    {{or schemes.fieldDivs.div_phi_nut "Gauss linearUpwind"}} grad(nut);
+    div(phi,nuTilda) {{or schemes.fieldDivs.div_phi_nuTilda "Gauss linearUpwind"}} grad(nuTilda);
+    {{!-- V1.14 — energy divergence; only emitted when the active
+              solver carries an energy field T (buoyantSimpleFoam).
+              OpenFOAM crashes on a missing-field divergence, so we
+              guard the line by solver-conditional rather than emitting
+              it unconditionally alongside the rest of the divSchemes
+              block. --}}
+    {{#if (eq solver 'buoyantSimpleFoam')}}
+    div(phi,T)      {{or schemes.fieldDivs.div_phi_T "Gauss linearUpwind"}} grad(T);
+    {{/if}}
     div((nuEff*dev2(T(grad(U))))) Gauss linear;
 }
 
 laplacianSchemes
 {
-    default         Gauss linear corrected;
+    // V1.12 — pulled from Domain.schemes.laplacianDefault. OpenFOAM
+    //  stock incompressible default is `Gauss linear corrected`;
+    //  `Gauss linear orthogonal` and `Gauss linear limited` are
+    //  the other two common choices (mesh orthogonality regime vs.
+    //  boundedness regime).
+    default         {{schemes.laplacianDefault}};
+    // V1.16 — per-field laplacian overrides. Always emit
+    //  laplacian(nuEff,U) (the momentum-diffusion term is universal);
+    //  emit the turbulence / energy ones only when the active
+    //  solver+turbulence combo carries them. Each line's value
+    //  resolves from `schemes.fieldLaplacians.X` if set, falling back
+    //  to `Gauss linear corrected` (matching OpenFOAM stock behavior
+    //  so pre-V1.16 .cfd-app-state.json files re-render identically).
+    laplacian(nuEff,U) {{or schemes.fieldLaplacians.laplacian_nuEff_U "Gauss linear corrected"}};
+    {{#if (eq turbulence 'kEpsilon')}}
+    laplacian(DkEff,k) {{or schemes.fieldLaplacians.laplacian_DkEff_k "Gauss linear corrected"}};
+    laplacian(DepsilonEff,epsilon) {{or schemes.fieldLaplacians.laplacian_DepsilonEff_epsilon "Gauss linear corrected"}};
+    {{/if}}
+    {{#if (eq turbulence 'kOmegaSST')}}
+    laplacian(DkEff,k) {{or schemes.fieldLaplacians.laplacian_DkEff_k "Gauss linear corrected"}};
+    laplacian(DomegaEff,omega) {{or schemes.fieldLaplacians.laplacian_DomegaEff_omega "Gauss linear corrected"}};
+    {{/if}}
+    {{#if (eq turbulence 'SpalartAllmaras')}}
+    laplacian(DnuTildaEff,nuTilda) {{or schemes.fieldLaplacians.laplacian_DnuTildaEff_nuTilda "Gauss linear corrected"}};
+    {{/if}}
+    {{#if (eq solver 'buoyantSimpleFoam')}}
+    laplacian(alphaEff,h) {{or schemes.fieldLaplacians.laplacian_alphaEff_h "Gauss linear corrected"}};
+    {{/if}}
 }
 
 interpolationSchemes
 {
-    default         linear;
+    // V1.15 — pulled from Domain.schemes.interpolationDefault. OpenFOAM
+    //  stock `linear` is symmetric and 2nd-order accurate on orthogonal
+    //  cells; `midPointU` improves skewness handling on stretched meshes
+    //  (face-area-weighted midpoint); `faceCorrected` blends across face
+    //  diagonals for low-quality cells. Solver-agnostic — same defaults
+    //  across SIMPLE / PISO / PIMPLE. Both this and snGradSchemes below
+    //  complete the V1.12 carve-out list (deferred from V1.12 to keep
+    //  that PR focused on the four most-impactful selectors).
+    default         {{schemes.interpolationDefault}};
 }
 
 snGradSchemes
 {
-    default         corrected;
+    // V1.15 — pulled from Domain.schemes.snGradDefault. OpenFOAM stock
+    //  `corrected` applies the non-orthogonal correction term; flip to
+    //  `uncorrected` on perfectly orthogonal meshes (saves the inner-
+    //  product work the correction does); `limited <coeff>` bounds the
+    //  correction for stability on moderately-skew meshes (0.5 is the
+    //  canonical choice for typical snappy-generated meshes).
+    default         {{schemes.snGradDefault}};
+    // V1.17 — per-field snGrad overrides. Always emit `snGrad(U)`
+    //  (the velocity surface-normal-gradient correction is universal);
+    //  emit the turbulence / energy ones only when the active
+    //  solver+turbulence combo carries them. Each line's value
+    //  resolves from `schemes.fieldSnGrads.X` if set, falling back
+    //  to `corrected` (matching the OpenFOAM stock behavior so
+    //  pre-V1.17 .cfd-app-state.json files re-render identically
+    //  with `corrected` everywhere).
+    snGrad(U)   {{or schemes.fieldSnGrads.snGrad_U "corrected"}};
+    {{#if (eq turbulence 'kEpsilon')}}
+    snGrad(k)       {{or schemes.fieldSnGrads.snGrad_k "corrected"}};
+    snGrad(epsilon) {{or schemes.fieldSnGrads.snGrad_epsilon "corrected"}};
+    {{/if}}
+    {{#if (eq turbulence 'kOmegaSST')}}
+    snGrad(k)       {{or schemes.fieldSnGrads.snGrad_k "corrected"}};
+    snGrad(omega)   {{or schemes.fieldSnGrads.snGrad_omega "corrected"}};
+    {{/if}}
+    {{#if (eq turbulence 'SpalartAllmaras')}}
+    snGrad(nuTilda) {{or schemes.fieldSnGrads.snGrad_nuTilda "corrected"}};
+    {{/if}}
+    {{#if (eq solver 'buoyantSimpleFoam')}}
+    snGrad(h)       {{or schemes.fieldSnGrads.snGrad_h "corrected"}};
+    {{/if}}
 }
 
 // ************************************************************************* //
