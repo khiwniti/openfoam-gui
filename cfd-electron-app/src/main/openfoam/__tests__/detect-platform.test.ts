@@ -20,7 +20,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { getCandidateBashrcPaths } from '../detect';
+import { buildInstallHints, getCandidateBashrcPaths } from '../detect';
 
 describe('V1.32 -- detect.ts platform branching', () => {
   it('darwin: includes Apple Silicon Homebrew opt-link', async () => {
@@ -95,5 +95,64 @@ describe('V1.32 -- detect.ts platform branching', () => {
     const paths = await getCandidateBashrcPaths();
     expect(Array.isArray(paths)).toBe(true);
     expect(paths.length).toBeGreaterThan(0);
+  });
+});
+
+describe('V1.33 -- buildInstallHints platform branching', () => {
+  it('darwin: includes brew install + source-build guidance', () => {
+    const hints = buildInstallHints('darwin');
+    expect(hints.some((h) => h.includes('brew install openfoam'))).toBe(true);
+    expect(hints.some((h) => h.includes('$HOME/OpenFOAM'))).toBe(true);
+    expect(hints.some((h) => h.toLowerCase().includes('alternatively'))).toBe(true);
+  });
+
+  it('darwin: still includes the original 3 platform-agnostic lines', () => {
+    // Parity guarantee -- the first three lines are useful on every
+    // platform; the macOS-added lines are appended AFTER them.
+    const hints = buildInstallHints('darwin');
+    expect(hints[0]).toBe('OpenFOAM was not detected on this system.');
+    expect(hints[1]).toMatch(/^Install OpenFOAM/);
+    expect(hints[2]).toMatch(/^Common path:/);
+  });
+
+  it('linux: does NOT include the darwin-only brew / source-build lines', () => {
+    const hints = buildInstallHints('linux');
+    expect(hints.some((h) => h.includes('brew install'))).toBe(false);
+    expect(hints.some((h) => h.includes('$HOME/OpenFOAM'))).toBe(false);
+    expect(hints.some((h) => h.toLowerCase().startsWith('on macos:'))).toBe(false);
+    expect(hints.some((h) => h.toLowerCase().startsWith('alternatively:'))).toBe(false);
+  });
+
+  it('win32: same as linux -- no darwin-only lines', () => {
+    // Windows users don't see Homebrew suggestions either. The
+    // buildInstallHints helper deliberately only branches on
+    // `platform === 'darwin'`; everything else (linux / win32 /
+    // freebsd / aix / etc.) gets the original 3-line set.
+    const hints = buildInstallHints('win32');
+    expect(hints.some((h) => h.includes('brew install'))).toBe(false);
+    expect(hints.some((h) => h.includes('On macOS'))).toBe(false);
+  });
+
+  it('darwin list = linux list + exactly 2 macOS-specific lines (set superset)', () => {
+    const linuxHints = buildInstallHints('linux');
+    const darwinHints = buildInstallHints('darwin');
+    expect(darwinHints.length).toBe(linuxHints.length + 2);
+    // Every linux line is preserved verbatim in the darwin list.
+    for (const l of linuxHints) expect(darwinHints).toContain(l);
+  });
+
+  it('default param falls back to process.platform (semantic equivalence contract)', () => {
+    // The V1.33 refactor of detectOpenfoam's failure-path calls
+    // buildInstallHints() with no arg; the runtime contract is
+    // that the no-arg call returns the SAME array as the explicit
+    // `buildInstallHints(process.platform)` call. A regression
+    // that hard-coded any other platform string as the default
+    // would silently drift detectOpenfoam's user-facing install
+    // hint set (e.g. a darwin-host would still see brew lines,
+    // but a linux-host running the same code would too). This
+    // strict JSON-equivalence assertion catches that silently.
+    expect(JSON.stringify(buildInstallHints())).toBe(
+      JSON.stringify(buildInstallHints(process.platform)),
+    );
   });
 });

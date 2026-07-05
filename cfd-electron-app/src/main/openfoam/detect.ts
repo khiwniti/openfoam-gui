@@ -92,6 +92,35 @@ export async function getCandidateBashrcPaths(
   return out;
 }
 
+/**
+ * V1.33 -- extracted from `detectOpenfoam`'s previously-inline
+ *  failure-path `installHints` array so the platform-conditional
+ *  macOS guidance lines are unit-testable. Behavior is unchanged:
+ *  the runtime caller (`detectOpenfoam`) was already passing
+ *  `process.platform` directly into the literal spread; the helper
+ *  accepts the same default and the same explicit-param contract
+ *  as `getCandidateBashrcPaths` so the two V1.32/V1.33 platform-
+ *  aware helpers live next to each other in the file.
+ */
+export function buildInstallHints(
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  return [
+    'OpenFOAM was not detected on this system.',
+    'Install OpenFOAM (https://www.openfoam.com or https://openfoam.org) or set a custom bashrc path in Settings.',
+    'Common path: /opt/openfoam/etc/bashrc (apt) or /opt/OpenFOAM/OpenFOAM-v2412/etc/bashrc (source build).',
+    // V1.32 -- macOS-specific guidance appended only on darwin so
+    //  Linux / Windows users don't see suggestions they can't act
+    //  on. The first three lines remain platform-agnostic.
+    ...(platform === 'darwin'
+      ? [
+          'On macOS: `brew install openfoam` (provides /opt/homebrew/opt/openfoam/etc/bashrc on Apple Silicon or /usr/local/opt/openfoam/etc/bashrc on Intel).',
+          'Alternatively: build from source into $HOME/OpenFOAM/<user>-vXXX/etc/bashrc.',
+        ]
+      : []),
+  ];
+}
+
 async function fileExists(p: string): Promise<boolean> {
   try { await fs.access(p); return true; } catch { return false; }
 }
@@ -170,20 +199,13 @@ export async function detectOpenfoam(): Promise<OpenfoamDetected> {
 
   return {
     found: false,
-    installHints: [
-      'OpenFOAM was not detected on this system.',
-      'Install OpenFOAM (https://www.openfoam.com or https://openfoam.org) or set a custom bashrc path in Settings.',
-      'Common path: /opt/openfoam/etc/bashrc (apt) or /opt/OpenFOAM/OpenFOAM-v2412/etc/bashrc (source build).',
-      // V1.32 -- macOS-specific guidance appended only on darwin so
-      //  Linux / Windows users don't see suggestions they can't act
-      //  on. The first two lines remain platform-agnostic.
-      ...(process.platform === 'darwin'
-        ? [
-            'On macOS: `brew install openfoam` (provides /opt/homebrew/opt/openfoam/etc/bashrc on Apple Silicon or /usr/local/opt/openfoam/etc/bashrc on Intel).',
-            'Alternatively: build from source into $HOME/OpenFOAM/<user>-vXXX/etc/bashrc.',
-          ]
-        : []),
-    ],
+    // V1.33 -- the previously-inline 3+2 installHints array moved
+    //  to the exported `buildInstallHints(platform)` helper so the
+    //  darwin-vs-linux branching is unit-testable without spawning
+    //  the full `detectOpenfoam` pipeline. The runtime path is
+    //  unchanged (the helper with no arg defaults to
+    //  `process.platform`).
+    installHints: buildInstallHints(),
   };
 }
 
