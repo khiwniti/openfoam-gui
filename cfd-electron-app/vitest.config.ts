@@ -22,6 +22,12 @@ export default defineConfig({
   resolve: {
     alias: {
       '@shared': resolve(here, 'src/shared'),
+      // V1.36a — add @main/* alias so test files can import from
+      //  electron-free helpers modules like @main/ipc/helpers
+      //  without pulling the IPC barrel's electron imports into the
+      //  vitest node env. Mirrors the alias block in
+      //  electron.vite.config.ts#main.resolve.alias.
+      '@main': resolve(here, 'src/main'),
     },
   },
   test: {

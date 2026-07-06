@@ -9,6 +9,23 @@ import { z } from 'zod';
 import { defaultRunRoot, ensureDir, cancelRun, listActiveRuns, startRun, buildRunPipeline } from '@main/openfoam/runner';
 import { detectOpenfoam, verifyBashrc } from '@main/openfoam/detect';
 import { renderCase, loadCaseState, saveCase } from '@main/openfoam/case';
+// V1.36a — import helpers into local scope (not just via re-export).
+// `export { ... } from '@main/ipc/helpers'` would expose the names to
+//  importers of the barrel, but NOT bind them into this file's module
+//  scope — a subtler TS rule than V1.34-V1.35c helpers lifted from
+//  case.ts/runner.ts (those files used the helpers *inside* their own
+//  scope, so an indirect re-export was sufficient). The IPC handler
+//  closures here MUST reference `listCasesAt`, `parseResultTimes`, etc.
+//  directly, so we need a real local `import` paired with a plain
+//  `export { ... }` at the bottom to maintain the production-callable
+//  surface via `@main/ipc`.
+import {
+  resolveResultTarget,
+  parseResultTimes,
+  parseResultFields,
+  listCasesAt,
+  formatOpenPathReply,
+} from '@main/ipc/helpers';
 import { IpcChannels } from '@shared/types';
 import { dialog, shell } from 'electron';
 import {
@@ -17,6 +34,7 @@ import {
   CaseKindSchema,
   DomainSchema,
   Domain,
+  type CaseKind,
   GeometryFilePickArgsSchema,
   GeometryFileWriteArgsSchema,
   PatchRefinementSchema,
@@ -167,22 +185,7 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
 
   ipcMain.handle(IpcChannels.caseList, async () => {
     const root = await getRunRoot();
-    try {
-      const entries = await fs.readdir(root, { withFileTypes: true });
-      const dirs = await Promise.all(
-        entries
-          .filter((e) => e.isDirectory())
-          .map(async (e) => {
-            const full = path.join(root, e.name);
-            const state = await loadCaseState(full).catch(() => null);
-            const mtime = (await fs.stat(full)).mtimeMs;
-            return state ? { dir: full, name: e.name, kind: state.kind, mtime } : null;
-          }),
-      );
-      return { ok: true, runs: dirs.filter(Boolean).sort((a, b) => (b!.mtime - a!.mtime)) };
-    } catch {
-      return { ok: true, runs: [] };
-    }
+    return { ok: true, runs: await listCasesAt(root) };
   });
 
   ipcMain.handle(
@@ -237,16 +240,7 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
     IpcChannels.resultsList,
     async (_evt, args: unknown) => {
       const { caseDir } = z.object({ caseDir: z.string() }).parse(args);
-      try {
-        const entries = await fs.readdir(caseDir, { withFileTypes: true });
-        const times = entries
-          .filter((e) => e.isDirectory() && /^[-0-9.]+$/.test(e.name))
-          .map((e) => parseFloat(e.name))
-          .sort((a, b) => a - b);
-        return { ok: true, times };
-      } catch {
-        return { ok: true, times: [] };
-      }
+      return { ok: true, times: await parseResultTimes(caseDir) };
     },
   );
 
@@ -259,19 +253,7 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
       const { caseDir, time } = z
         .object({ caseDir: z.string(), time: z.number() })
         .parse(args);
-      try {
-        const dir = path.join(caseDir, String(time));
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        // Field files are flat files at the top of the time dir; skip
-        // sub-dirs and dotfiles.
-        const files = entries
-          .filter((e) => e.isFile() && !e.name.startsWith("."))
-          .map((e) => e.name)
-          .sort();
-        return { ok: true, files };
-      } catch {
-        return { ok: true, files: [] };
-      }
+      return { ok: true, files: await parseResultFields(caseDir, time) };
     },
   );
 
@@ -283,14 +265,7 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
     IpcChannels.resultsRevealVTK,
     async (_evt, args: unknown) => {
       const { caseDir } = z.object({ caseDir: z.string() }).parse(args);
-      const vtkDir = path.join(caseDir, "VTK");
-      let target = caseDir;
-      try {
-        const stat = await fs.stat(vtkDir);
-        if (stat.isDirectory()) target = vtkDir;
-      } catch {
-        /* VTK doesn't exist yet; fall back to case dir */
-      }
+      const target = await resolveResultTarget(caseDir);
       shell.showItemInFolder(target);
       return { ok: true, revealed: target };
     },
@@ -300,18 +275,11 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
     IpcChannels.resultsOpenVTKDir,
     async (_evt, args: unknown) => {
       const { caseDir } = z.object({ caseDir: z.string() }).parse(args);
-      const vtkDir = path.join(caseDir, "VTK");
-      let target = caseDir;
-      try {
-        const stat = await fs.stat(vtkDir);
-        if (stat.isDirectory()) target = vtkDir;
-      } catch {
-        /* fall back to case dir */
-      }
+      const target = await resolveResultTarget(caseDir);
       // openPath returns '' on success, or an error string. We swallow the
       // error string into the IPC reply so the renderer can show it.
-      const result = await shell.openPath(target);
-      return { ok: result.length === 0, opened: target, error: result || undefined };
+      const errorString = await shell.openPath(target);
+      return formatOpenPathReply(target, errorString);
     },
   );
 
@@ -373,22 +341,7 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   // Reuse the same scan-as-case logic but expose for the geometry panel.
   ipcMain.handle(IpcChannels.geometryCaseList, async () => {
     const root = await getRunRoot();
-    try {
-      const entries = await fs.readdir(root, { withFileTypes: true });
-      const dirs = await Promise.all(
-        entries
-          .filter((e) => e.isDirectory())
-          .map(async (e) => {
-            const full = path.join(root, e.name);
-            const state = await loadCaseState(full).catch(() => null);
-            const mtime = (await fs.stat(full)).mtimeMs;
-            return state ? { dir: full, name: e.name, kind: state.kind, mtime } : null;
-          }),
-      );
-      return { ok: true, runs: dirs.filter(Boolean).sort((a, b) => (b!.mtime - a!.mtime)) };
-    } catch {
-      return { ok: true, runs: [] };
-    }
+    return { ok: true, runs: await listCasesAt(root) };
   });
 }
 
@@ -421,5 +374,23 @@ async function pickCaseDir(label?: string): Promise<string> {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   return path.join(root, `${safe}__${stamp}`);
 }
+
+// ---------------- V1.36a: pure-fn handlers, re-exported ----------------
+//
+// The IPC handler closures above used to inline-mount fs + dirent logic
+// repeated across 6 handlers (caseList, geometryCaseList, resultsList,
+// resultsListFields, resultsRevealVTK, resultsOpenVTKDir). V1.36a lifted
+// each block of inline logic into a named helper living in
+// @main/ipc/helpers (electron-free module — the barrel here imports
+// electron at module-load, which crashes vitest's node env). Production
+// callers can keep importing from '@main/ipc' via this re-export.
+
+export {
+  resolveResultTarget,
+  parseResultTimes,
+  parseResultFields,
+  listCasesAt,
+  formatOpenPathReply,
+};
 
 export type { RunResult };
