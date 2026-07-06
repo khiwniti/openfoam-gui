@@ -27,6 +27,10 @@ import {
   formatOpenPathReply,
   readSettingsFromDisk,
   writeSettingsToDisk,
+  // V1.36c — paired with the resultsRead handler shrink below; vitest
+  //  imports this directly from @main/ipc/helpers to skip the
+  //  barrel's electron import chain.
+  readResultField,
 } from '@main/ipc/helpers';
 import { IpcChannels } from '@shared/types';
 import { dialog, shell } from 'electron';
@@ -39,6 +43,15 @@ import {
   type CaseKind,
   GeometryFilePickArgsSchema,
   GeometryFileWriteArgsSchema,
+  // V1.36c — IPC envelope schemas lifted out of the previously-inline
+  //  `z.object({...})` parses in openfoamVerifyBashrc + resultsRead so
+  //  the renderer/main wire-format contract is testable without
+  //  pulling in Electron (same blocker V1.35c closed for the two
+  //  geometry envelope schemas above). The drift-safety pin for
+  //  VerifyBashrcArgsSchema lives in
+  //  src/shared/__tests__/verify-bashrc-args.test.ts.
+  VerifyBashrcArgsSchema,
+  ResultReadArgsSchema,
   PatchRefinementSchema,
   RunResultSchema,
   // V1.31a — extracted from the previously-inline IPC envelope so
@@ -92,7 +105,13 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.openfoamVerifyBashrc,
     async (_evt, args: unknown): Promise<OpenfoamDetected> => {
-      const { path: bashrcPath } = z.object({ path: z.string() }).parse(args);
+      // V1.36c — parse via the named VerifyBashrcArgsSchema from
+      //  @shared/types instead of the previously-inline
+      //  `z.object({ path: z.string() })` shape. Vitest drift-tests
+      //  the named schema without needing electron's `ipcMain`
+      //  import (same lift rationale as V1.35c's
+      //  GeometryFilePickArgsSchema / GeometryFileWriteArgsSchema).
+      const { path: bashrcPath } = VerifyBashrcArgsSchema.parse(args);
       return verifyBashrc(bashrcPath);
     },
   );
@@ -282,17 +301,13 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.resultsRead,
     async (_evt, args: unknown) => {
-      const { caseDir, time, field } = z
-        .object({ caseDir: z.string(), time: z.number(), field: z.string() })
-        .parse(args);
-      // Minimal: read <caseDir>/<time>/<field> as text for VTK parsing in renderer.
-      const p = path.join(caseDir, String(time), field);
-      try {
-        const text = await fs.readFile(p, 'utf8');
-        return { ok: true, text };
-      } catch (err) {
-        return { ok: false, message: String(err) };
-      }
+      // V1.36c — parse via the named ResultReadArgsSchema from
+      //  @shared/types; delegate the fs read + try/catch envelope to
+      //  the readResultField helper in @main/ipc/helpers (electron-
+      //  free module; vitest exercises it directly). Handler shrinks
+      //  from 12 lines to 3.
+      const { caseDir, time, field } = ResultReadArgsSchema.parse(args);
+      return readResultField(caseDir, time, field);
     },
   );
 
@@ -389,6 +404,7 @@ export {
   formatOpenPathReply,
   readSettingsFromDisk,
   writeSettingsToDisk,
+  readResultField,
 };
 
 export type { RunResult };

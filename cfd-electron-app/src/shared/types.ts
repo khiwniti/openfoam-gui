@@ -1875,3 +1875,54 @@ export const GeometryFileWriteArgsSchema = z.object({
   bytes: z.instanceof(Uint8Array),
 });
 export type GeometryFileWriteArgs = z.infer<typeof GeometryFileWriteArgsSchema>;
+
+/**
+ * V1.36c — wire-format shape for the `openfoamVerifyBashrc` IPC
+ *  handler in `src/main/ipc/index.ts`. Extracted from the previously-
+ *  inline `z.object({ path: z.string() })` shape so vitest can
+ *  exercise it without pulling in Electron's `ipcMain` (same
+ *  V1.31a / V1.35c blocker closed for the other IPC envelope
+ *  schemas above).
+ *
+ *  The `path` field is destructured-and-renamed to `bashrcPath` in
+ *  the handler (`const { path: bashrcPath } = ...`) because the
+ *  local `path.join(...)` call elsewhere in the file would shadow
+ *  a `path` property name. The wire-format field stays `path` for
+ *  semantic parity with the renderer-side call site (which reads
+ *  "the path to verify").
+ *
+ *  Non-strict by convention (extra keys silently strip) — mirrors
+ *  the RunStartEnvelopeSchema / GeometryFilePickArgsSchema contract.
+ *  The drift-safety pin in
+ *  `src/shared/__tests__/verify-bashrc-args.test.ts` covers the
+ *  happy + missing-key + wrong-type cases so a future schema
+ *  drift gets caught before it ships.
+ */
+export const VerifyBashrcArgsSchema = z.object({
+  path: z.string(),
+});
+export type VerifyBashrcArgs = z.infer<typeof VerifyBashrcArgsSchema>;
+
+/**
+ * V1.36c — wire-format shape for the `resultsRead` IPC handler in
+ *  `src/main/ipc/index.ts`. Extracted from the previously-inline
+ *  `z.object({ caseDir, time, field })` shape. The fs read +
+ *  try/catch envelope is in `readResultField` (helpers.ts); this
+ *  schema only pins the *wire* shape — the renderer must send a
+ *  string caseDir, numeric time, string field name.
+ *
+ *  `time` is `z.number()` (not `z.string()`) because the renderer
+ *  surfaces time directories as a parsed number list via
+ *  `parseResultTimes` (see helpers.ts). The wire sends back the
+ *  same numeric value; `readResultField`'s `path.join(caseDir,
+ *  String(time), field)` does the textual coercion downstream.
+ *
+ *  Non-strict by convention (extra keys silently strip) — mirrors
+ *  the rest of the IPC envelope schema contract.
+ */
+export const ResultReadArgsSchema = z.object({
+  caseDir: z.string(),
+  time: z.number(),
+  field: z.string(),
+});
+export type ResultReadArgs = z.infer<typeof ResultReadArgsSchema>;

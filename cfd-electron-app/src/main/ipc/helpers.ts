@@ -149,3 +149,43 @@ export async function writeSettingsToDisk(
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
   return settingsPath;
 }
+
+/** Read a single field file from a transient OpenFOAM case at
+ *  `<caseDir>/<time>/<field>`. Mirrors the inline body of the original
+ *  resultsRead IPC handler — returns `{ ok: true, text }` on success
+ *  or `{ ok: false, message }` on any read failure (ENOENT, EISDIR,
+ *  EACCES, etc.).
+ *
+ *  IPC contract: never throw. The renderer surfaces the message string
+ *  verbatim as an error toast; the producer-side curve in case.ts /
+ *  VTK writer is the upstream consumer that hands the text to the
+ *  Three.js VTK parser.
+ *
+ *  Note on `String(err)`: the inline handler used `String(err)` which
+ *  coerces non-Error throws to a sensible string `"5"` or `"null"` etc.
+ *  We preserve that exact coercion so the renderer sees the same
+ *  message shape it has always seen.
+ *
+ *  The `time` parameter is joined as `String(time)` to match the
+ *  OpenFOAM `<caseDir>/<time>/<field>` directory layout where `time`
+ *  is the user-facing time string (e.g., "0.5", "1", "0.0001"). */
+export async function readResultField(
+  caseDir: string,
+  time: number,
+  field: string,
+): Promise<ResultReadReply> {
+  const p = path.join(caseDir, String(time), field);
+  try {
+    const text = await fs.readFile(p, 'utf8');
+    return { ok: true, text };
+  } catch (err) {
+    return { ok: false, message: String(err) };
+  }
+}
+
+/** Reply shape for `readResultField`. Discriminated union on `ok` so
+ *  the renderer side (and the test pin below) can branch on success
+ *  vs error without re-reading a string field name. */
+export type ResultReadReply =
+  | { ok: true; text: string }
+  | { ok: false; message: string };
