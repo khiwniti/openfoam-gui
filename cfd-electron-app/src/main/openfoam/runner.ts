@@ -6,9 +6,6 @@
  * - Supports cancellation that kills the entire process group
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import type { Phase, LogChunk, ResidualPoint } from '@shared/types';
@@ -258,11 +255,11 @@ async function runStage(run: ActiveRun, stage: RunStage, opts: RunOptions): Prom
 
     stdout.on('line', (line) => {
       logger.push({ stream: 'stdout', text: line + '\n', runId: run.id });
-      parser.consume(stdoutLikeLine(stage.name, line));
+      parser.consume(line);
     });
     stderr.on('line', (line) => {
       logger.push({ stream: 'stderr', text: line + '\n', runId: run.id });
-      parser.consume(stdoutLikeLine(stage.name, line));
+      parser.consume(line);
     });
 
     child.on('error', (err) => {
@@ -285,11 +282,6 @@ async function runStage(run: ActiveRun, stage: RunStage, opts: RunOptions): Prom
       }
     });
   });
-}
-
-function stdoutLikeLine(stage: RunStage['name'], line: string): string {
-  // attach stage name as subtle marker for parser
-  return line;
 }
 
 /** V1.8 — `reason` distinguishes user-initiated aborts from
