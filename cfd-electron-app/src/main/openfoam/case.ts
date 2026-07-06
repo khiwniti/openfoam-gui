@@ -205,15 +205,21 @@ function buildTemplateLayout(domain: Domain, kind: CaseKind): TemplateEntry[] {
   ];
 }
 
-/** Background-domain resolution string for snappyHexMeshDict (e.g. "30 20 20"). */
-function formatResolution(domain: Domain): string {
+/** Background-domain resolution string for snappyHexMeshDict (e.g. "30 20 20").
+ *  V1.35a — exported as a named symbol so vitest can drive it
+ *  directly without round-tripping through the full renderCase
+ *  pipeline (which would need fs + cwd + NODE_ENV setup). The
+ *  function itself is unchanged — only the visibility flag. */
+export function formatResolution(domain: Domain): string {
   return `${domain.nx} ${domain.ny} ${domain.nz}`;
 }
 
 /** A point guaranteed to live inside the background blockMesh, used by
  *  snappy as the seed point for casting the surface. Falls back to the
- *  parametric domain center if the imported bbox is missing. */
-function formatLocationInMesh(domain: Domain): string {
+ *  parametric domain center if the imported bbox is missing.
+ *  V1.35a — exported for unit testing (see `formatResolution` above
+ *  for the testability rationale). */
+export function formatLocationInMesh(domain: Domain): string {
   const fmtNum = (n: number) => {
     if (!Number.isFinite(n)) return "0";
     // Keep it short — snappy will accept decimals, this is just a seed.
