@@ -1,6 +1,13 @@
 /**
  * OpenFOAM detection — finds installed OpenFOAM versions and their bashrc paths.
  * The user can override the path explicitly via settings.
+ *
+ * V1.39 — pure string parsers + bash command constructors
+ *  extracted from the inline probeBashrc / resolveBinFromBashrc
+ *  bodies into @main/openfoam/detect-helpers. The orchestration
+ *  (execFile + timeout + the fileExists loop) stays in this
+ *  file; the lifted helpers are vitest-exercisable without
+ *  spawning a real bash subprocess.
  */
 import { promises as fs } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -8,6 +15,12 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
 import type { OpenfoamDetected } from '@shared/types';
+import {
+  formatBashrcBinPathsCommand,
+  formatBashrcProbeCommand,
+  parseFoamBinPaths,
+  parseOpenfoamVersion,
+} from './detect-helpers';
 
 const execFileAsync = promisify(execFile);
 
@@ -127,12 +140,18 @@ async function fileExists(p: string): Promise<boolean> {
 
 async function probeBashrc(bashrc: string): Promise<OpenfoamDetected | null> {
   try {
-    // Source bashrc in a sub-shell, then print WM_PROJECT_VERSION
+    // V1.39 — bash -c command string built by
+    //  formatBashrcProbeCommand(bashrc); stdout parsed by
+    //  parseOpenfoamVersion(stdout) which returns the trimmed
+    //  WM_PROJECT_VERSION (or null if empty). The execFile +
+    //  timeout + null-on-throw orchestration stays in this
+    //  file; the pure construction + parse steps are vitest-
+    //  exercisable in @main/openfoam/detect-helpers.
     const { stdout } = await execFileAsync('bash', [
       '-c',
-      `set -e; source "${bashrc}" >/dev/null 2>&1; echo "$WM_PROJECT_VERSION"`,
+      formatBashrcProbeCommand(bashrc),
     ], { timeout: 15_000 });
-    const version = stdout.trim();
+    const version = parseOpenfoamVersion(stdout);
     if (!version) return null;
 
     const binPaths = await resolveBinFromBashrc(bashrc);
@@ -144,11 +163,17 @@ async function probeBashrc(bashrc: string): Promise<OpenfoamDetected | null> {
 
 async function resolveBinFromBashrc(bashrc: string): Promise<string[]> {
   try {
+    // V1.39 — bash -c command string built by
+    //  formatBashrcBinPathsCommand(bashrc); stdout parsed by
+    //  parseFoamBinPaths(stdout) which returns the array of
+    //  resolved bin paths (trim + split-on-whitespace +
+    //  filter-empty). The execFile + timeout + fileExists
+    //  filter loop stays in this file.
     const { stdout } = await execFileAsync('bash', [
       '-c',
-      `set -e; source "${bashrc}" >/dev/null 2>&1; echo "$FOAM_APPBIN $WM_PROJECT_DIR/platforms/$WM_ARCH$WM_COMPILER$WM_PRECISION_OPTION$WM_LABEL_OPTION/bin"`,
+      formatBashrcBinPathsCommand(bashrc),
     ], { timeout: 15_000 });
-    const parts = stdout.trim().split(/\s+/).filter(Boolean);
+    const parts = parseFoamBinPaths(stdout);
     const found: string[] = [];
     for (const p of parts) {
       if (await fileExists(p)) found.push(p);
@@ -226,3 +251,21 @@ export async function verifyBashrc(bashrcPath: string): Promise<OpenfoamDetected
   //  static-analysis collision and the runtime spread cost.
   return detected;
 }
+
+// V1.39 — re-export the lifted helpers from
+//  @main/openfoam/detect-helpers for backward compat. The 4
+//  pure utilities (parseOpenfoamVersion + parseFoamBinPaths +
+//  formatBashrcProbeCommand + formatBashrcBinPathsCommand)
+//  don't have a pre-V1.39 public name to preserve (they were
+//  inlined inside probeBashrc / resolveBinFromBashrc), but the
+//  re-export keeps the public surface uniform with the
+//  V1.37* / V1.38* / V1.38b pattern (every pure utility
+//  in a sibling module is also re-exported from the barrel
+//  for callers that prefer the shorter `@main/openfoam/detect`
+//  import path).
+export {
+  formatBashrcBinPathsCommand,
+  formatBashrcProbeCommand,
+  parseFoamBinPaths,
+  parseOpenfoamVersion,
+} from './detect-helpers';
