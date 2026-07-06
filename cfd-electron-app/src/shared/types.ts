@@ -1820,3 +1820,58 @@ export const RunStartEnvelopeSchema = z.object({
   convergence: RunStartConvergenceSchema.optional(),
 });
 export type RunStartEnvelope = z.infer<typeof RunStartEnvelopeSchema>;
+
+/**
+ * V1.35c — wire-format shape for the `geometryFilePickAndRead` IPC
+ *  handler in `src/main/ipc/index.ts`. Extracted from the previously-
+ *  inline `z.object({ format: z.enum([...]) })` shape so vitest can
+ *  exercise it without pulling in Electron's `dialog` (the IPC
+ *  handler imports `dialog`, which is unavailable in unit-test
+ *  contexts -- same blocker V1.31a closed for `RunStartEnvelopeSchema`).
+ *
+ *  Reuses the existing `GeometryFormatSchema` ('STEP' | 'STL' | 'IGES')
+ *  for the format enum rather than re-listing the literals -- a future
+ *  format addition (e.g. 'OBJ' if the OCCT-backed mesher grows one)
+ *  lands in `GeometryFormatSchema` and this schema inherits it
+ *  automatically. The drift-safety test in
+ *  `geometry-ipc-schemas.test.ts` pins that pair.
+ *
+ *  Non-strict by convention (no `.strict()` on the parent object) --
+ *  the renderer may pass extra metadata (e.g., a future
+ *  `lastPickPath` for "open from previous location" affordance) and
+ *  those should silently strip rather than throw. The IPC regression
+ *  net in V1.31a established this contract; we mirror it here.
+ */
+export const GeometryFilePickArgsSchema = z.object({
+  format: GeometryFormatSchema,
+});
+export type GeometryFilePickArgs = z.infer<typeof GeometryFilePickArgsSchema>;
+
+/**
+ * V1.35c — wire-format shape for the `geometryFileWrite` IPC handler
+ *  in `src/main/ipc/index.ts`. Extracted from the previously-inline
+ *  `z.object({ path: ..., bytes: z.instanceof(Uint8Array) })` shape.
+ *
+ *  The `z.instanceof(Uint8Array)` check is deliberate: the renderer
+ *  passes geometry-file bytes through Electron's structured-clone IPC
+ *  pipeline, which preserves Buffer-view semantics for typed arrays
+ *  but DOES NOT preserve plain number-arrays / ArrayBuffers in the
+ *  same way (a plain Array crosses the IPC boundary by JSON-serializing
+ *  to number[], losing byte-precision for high-entropy binary content).
+ *  `Uint8Array` is the contract; the regression net tests that
+ *  Buffer / ArrayBuffer / number-array inputs are rejected at parse
+ *  time before reaching `fs.writeFile`.
+ *
+ *  Path goes through `z.string()` with no `.min(1)` because path
+ *  validation (existence / writability) happens at the OS layer --
+ *  the schema contract is just "renderer handed us a string we can
+ *  pass to `path.dirname()`."
+ *
+ *  Non-strict by convention (extra keys silently strip) -- mirrors
+ *  the RunStartEnvelopeSchema contract.
+ */
+export const GeometryFileWriteArgsSchema = z.object({
+  path: z.string(),
+  bytes: z.instanceof(Uint8Array),
+});
+export type GeometryFileWriteArgs = z.infer<typeof GeometryFileWriteArgsSchema>;

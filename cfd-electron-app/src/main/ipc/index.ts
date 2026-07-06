@@ -17,6 +17,8 @@ import {
   CaseKindSchema,
   DomainSchema,
   Domain,
+  GeometryFilePickArgsSchema,
+  GeometryFileWriteArgsSchema,
   PatchRefinementSchema,
   RunResultSchema,
   // V1.31a — extracted from the previously-inline IPC envelope so
@@ -335,9 +337,11 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.geometryFilePickAndRead,
     async (_evt, args: unknown) => {
-      const { format } = z
-        .object({ format: z.enum(['STEP', 'STL', 'IGES']) })
-        .parse(args);
+      // V1.35c -- parse via the named GeometryFilePickArgsSchema
+      //  from @shared/types instead of the previously-inline
+      //  `z.object({ format: enum })` shape. Vitest drift-tests the
+      //  named schema without needing electron's `dialog` import.
+      const { format } = GeometryFilePickArgsSchema.parse(args);
       const ext = format === 'STEP' ? 'stp' : format === 'IGES' ? 'igs' : 'stl';
       const result = await dialog.showOpenDialog({
         title: `Import ${format} geometry`,
@@ -358,9 +362,9 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.geometryFileWrite,
     async (_evt, args: unknown) => {
-      const { path: target, bytes } = z
-        .object({ path: z.string(), bytes: z.instanceof(Uint8Array) })
-        .parse(args);
+      // V1.35c -- parse via the named GeometryFileWriteArgsSchema.
+      //  Same lift rationale as geometryFilePickAndRead above.
+      const { path: target, bytes } = GeometryFileWriteArgsSchema.parse(args);
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.writeFile(target, Buffer.from(bytes));
     },
