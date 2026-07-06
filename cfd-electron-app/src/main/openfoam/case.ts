@@ -18,28 +18,30 @@ import {
 } from '@shared/types';
 // V1.38 — pure string formatters extracted from the inline
 //  Handlebars.registerHelper callbacks below into
-//  @main/openfoam/case-helpers. The wrappers preserved here are
-//  thin type-coercion + SafeString-wrap shells that delegate to
-//  the pure cores; vitest exercises the cores directly. The
+//  @main/openfoam/case-formatters. The wrappers preserved here
+//  are thin type-coercion + SafeString-wrap shells that delegate
+//  to the pure cores; vitest exercises the cores directly. The
 //  lift preserves the public Handlebars surface
 //  ({{smootherLine solver}}, {{bcFor bcMap patchName}},
 //  {{refBlock refMap patchName}}) byte-for-byte.
-// V1.38b — extends case-helpers with 4 additional pure
+// V1.38b — extends the helper modules with 4 additional pure
 //  utilities: shouldEmitRelaxationFactors + shouldEmitAdaptiveTimeStep
 //  (the 2 precomputed booleans for the fvSolution +
-//  controlDict emit gates) + resolveTemplatesRoot (parameterized
-//  on env for testability) + buildRenderContext (the full
-//  Handlebars context object construction lifted from the
-//  inline literal in renderCase).
+//  controlDict emit gates, in case-emit-flags) + resolveTemplatesRoot
+//  (parameterized on env for testability, in case-context) +
+//  buildRenderContext (the full Handlebars context object
+//  construction lifted from the inline literal in renderCase,
+//  in case-context).
+// V1.41 — case-helpers.ts is now a thin re-export barrel; the
+//  3 focused modules below own the implementations. The wrappers
+//  here import from each module directly (skipping the barrel
+//  round-trip) to keep the call-site explicit.
 import {
-  buildRenderContext,
   formatBcBlock,
   formatRefinementBlock,
   formatSmootherLine,
-  resolveTemplatesRoot,
-  shouldEmitAdaptiveTimeStep,
-  shouldEmitRelaxationFactors,
-} from './case-helpers';
+} from './case-formatters';
+import { resolveTemplatesRoot, buildRenderContext } from './case-context';
 
 Handlebars.registerHelper('eq', (a: unknown, b: unknown) => a === b);
 Handlebars.registerHelper('or', (a: unknown, b: unknown) => a || b);
@@ -333,26 +335,32 @@ export async function saveCase(
   return renderCase(kind, domain, bc, targetDir, caseLabel, refinements);
 }
 
-// V1.38b — re-export the lifted helpers from
-//  @main/openfoam/case-helpers for backward compat. The 5
-//  pure utilities preserve their pre-V1.38b public surface
-//  so any external caller (e.g., the IPC barrel in
-//  src/main/ipc/index.ts, the renderer-side test fixtures)
-//  keeps importing from '@main/openfoam/case' without churn:
+// V1.41 — re-export the lifted helpers from the 3 focused
+//  modules for backward compat. The 5 pure utilities preserve
+//  their pre-V1.41 public surface so any external caller
+//  (e.g., the IPC barrel in src/main/ipc/index.ts, the
+//  renderer-side test fixtures) keeps importing from
+//  '@main/openfoam/case' without churn:
 //    * formatResolution + formatLocationInMesh -- V1.35a
-//      exports that V1.38b re-homed into case-helpers
-//      (without these re-exports, downstream code that did
-//      `import { formatResolution } from './case'` would
-//      break).
+//      exports that V1.41 split out of case-helpers into
+//      case-formatters (without these re-exports, downstream
+//      code that did `import { formatResolution } from './case'`
+//      would break).
 //    * shouldEmitRelaxationFactors + shouldEmitAdaptiveTimeStep
-//      + resolveTemplatesRoot -- V1.38b lifts re-exported for
-//      the same backward-compat reason.
+//      -- V1.38b lifts, V1.41 split out of case-helpers into
+//      case-emit-flags, re-exported for the same
+//      backward-compat reason.
+//    * resolveTemplatesRoot -- V1.38b lift, V1.41 split out
+//      of case-helpers into case-context, re-exported for
+//      the same reason.
 //  buildRenderContext is consumed internally by renderCase and
 //  doesn't have a legacy public name to preserve.
 export {
   formatLocationInMesh,
   formatResolution,
-  resolveTemplatesRoot,
+} from './case-formatters';
+export {
   shouldEmitAdaptiveTimeStep,
   shouldEmitRelaxationFactors,
-} from './case-helpers';
+} from './case-emit-flags';
+export { resolveTemplatesRoot } from './case-context';
