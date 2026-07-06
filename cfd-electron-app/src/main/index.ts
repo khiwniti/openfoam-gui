@@ -1,10 +1,17 @@
 /**
  * Electron main process entry — bootstraps the window and registers IPC.
  */
-import { app, BrowserWindow, Menu, shell, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerIpc } from './ipc/index.js';
+// V1.43 — pure platform-aware application-menu template builder
+//  lifted from this file's `setApplicationMenu` into
+//  @main/menu-helpers. The template construction is now
+//  vitest-exercisable for both macOS and Linux/Windows
+//  branches; the impure `Menu.setApplicationMenu(
+//  Menu.buildFromTemplate(...))` call stays in this file.
+import { buildApplicationMenuTemplate } from './menu-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
@@ -68,81 +75,27 @@ app.on('web-contents-created', (_event, contents) => {
 });
 
 /**
- * V1.32 — install the standard platform-aware application menu.
+ * V1.43 — install the standard platform-aware application menu.
  *
- * macOS expects an app-menu (About / Services / Hide / Quit) as the
- * leftmost submenu; Linux / Windows don't render the slot. The Edit /
- * View / Window submenus use the cross-platform Electron default
- * roles so the same template ships on every OS without per-platform
- * re-arrangement beyond the standard homeEnd / pasteAndMatchStyle /
- * `Window > front` extras that macOS conventions add.
+ * The pure template construction is lifted to
+ *  @main/menu-helpers.buildApplicationMenuTemplate (vitest-
+ *  exercised for both macOS and Linux/Windows branches). This
+ *  function keeps only the impure `Menu.setApplicationMenu(
+ *  Menu.buildFromTemplate(...))` call.
  *
- * Called inside `app.whenReady()` so the Menu API is fully wired up.
+ * V1.32 — original V1.32 docblock (preserved): macOS expects
+ *  an app-menu (About / Services / Hide / Quit) as the leftmost
+ *  submenu; Linux / Windows don't render the slot. The Edit /
+ *  View / Window submenus use the cross-platform Electron
+ *  default roles so the same template ships on every OS
+ *  without per-platform re-arrangement beyond the standard
+ *  pasteAndMatchStyle / `Window > front` extras that macOS
+ *  conventions add.
+ *
+ * Called inside `app.whenReady()` so the Menu API is fully
+ *  wired up.
  */
 function setApplicationMenu() {
-  const isMac = process.platform === 'darwin';
-
-  const editExtras: MenuItemConstructorOptions[] = isMac
-    ? [{ role: 'pasteAndMatchStyle' }, { role: 'delete' }, { role: 'selectAll' }]
-    : [{ role: 'delete' }, { type: 'separator' }, { role: 'selectAll' }];
-
-  const windowExtras: MenuItemConstructorOptions[] = isMac
-    ? [{ type: 'separator' }, { role: 'front' }, { type: 'separator' }, { role: 'window' }]
-    : [{ role: 'close' }];
-
-  // Mac-only app-menu submenu (About / Services / Hide / Quit). Hoisted
-  // into a named typed array for symmetry with editExtras/windowExtras.
-  const appMenuSubmenu: MenuItemConstructorOptions[] = [
-    { role: 'about' },
-    { type: 'separator' },
-    { role: 'services' },
-    { type: 'separator' },
-    { role: 'hide' },
-    { role: 'hideOthers' },
-    { role: 'unhide' },
-    { type: 'separator' },
-    { role: 'quit' },
-  ];
-
-  const template: MenuItemConstructorOptions[] = [
-    ...(isMac
-      ? [{ label: app.name, submenu: appMenuSubmenu }]
-      : []),
-    {
-      label: 'File',
-      submenu: [isMac ? { role: 'close' } : { role: 'quit' }],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        ...editExtras,
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-      ],
-    },
-    {
-      label: 'Window',
-      submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...windowExtras],
-    },
-  ];
-
+  const template = buildApplicationMenuTemplate(process.platform, app.name);
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
