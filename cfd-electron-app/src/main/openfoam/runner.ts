@@ -12,6 +12,19 @@ import os from 'node:os';
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import type { Phase, LogChunk, ResidualPoint } from '@shared/types';
+// V1.37a — pure / fs-based helpers extracted from this file into
+//  @main/openfoam/runner-helpers (mirrors the V1.36* IPC-handler-
+//  body lift pattern). The names are imported into local scope so
+//  the rest of this file can call them directly, and re-exported at
+//  the bottom for backward compat with the IPC barrel +
+//  src/main/openfoam/case.ts.
+import {
+  buildRunPipeline,
+  defaultRunRoot,
+  ensureDir,
+  formatDuration,
+  type RunStage,
+} from './runner-helpers';
 
 export interface RunOptions {
   bashrc: string;
@@ -46,52 +59,10 @@ export interface RunOptions {
   };
 }
 
-export interface RunStage {
-  name: 'meshing' | 'snapping' | 'decomposing' | 'solving' | 'reconstructing' | 'converting' | 'cleanup';
-  /** e.g. ["blockMesh"] or ["mpirun","-np","4","simpleFoam","-parallel"] */
-  command: string[];
-  /** If true, append "-parallel" to simpleFoam etc. */
-  envOverrides?: Record<string, string>;
-}
 
-/**
- * Build the OpenFOAM pipeline appropriate for a case.
- *
- *   • geometryKind === 'imported' (snappyHexMeshDict present, patches exported):
- *       blockMesh → snappyHexMesh -overwrite → [decomposePar → solver -parallel → reconstructPar] → foamToVTK
- *
- *   • otherwise (parametric / coord-space domain):
- *       blockMesh → [decomposePar → solver -parallel → reconstructPar] → foamToVTK
- *
- * `cores` controls whether `decomposePar` and `mpirun` are used.
- */
-export function buildRunPipeline(opts: {
-  cores: number;
-  solver: string;
-  geometryKind?: 'parametric' | 'imported';
-}): RunStage[] {
-  const { cores, solver, geometryKind = 'parametric' } = opts;
-  const stages: RunStage[] = [];
-
-  // Background mesh is required in BOTH flows so snappy has hexes to chop into.
-  stages.push({ name: 'meshing', command: ['blockMesh'] });
-
-  if (geometryKind === 'imported') {
-    // '-overwrite' lets us re-run snappy in place without manual `rm -rf constant/polyMesh`.
-    stages.push({ name: 'snapping', command: ['snappyHexMesh', '-overwrite'] });
-  }
-
-  if (cores > 1) {
-    stages.push({ name: 'decomposing', command: ['decomposePar'] });
-    stages.push({ name: 'solving', command: ['mpirun', '-np', String(cores), solver, '-parallel'] });
-    stages.push({ name: 'reconstructing', command: ['reconstructPar'] });
-  } else {
-    stages.push({ name: 'solving', command: [solver] });
-  }
-
-  stages.push({ name: 'converting', command: ['foamToVTK', '-ascii'] });
-  return stages;
-}
+// V1.37a — buildRunPipeline was lifted to @main/openfoam/runner-helpers.
+//  See the import at the top + the re-export at the bottom of this
+//  file. The implementation + JSDoc live in the new module.
 
 interface ActiveRun {
   id: string;
@@ -511,23 +482,20 @@ function makeConvergenceChecker(opts: {
   };
 }
 
-// ----- Utility -----
-function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return [h, m, sec].map((n) => String(n).padStart(2, '0')).join(':');
-}
+// V1.37a — formatDuration / ensureDir / defaultRunRoot were lifted
+//  to @main/openfoam/runner-helpers. See the import at the top +
+//  the re-export at the bottom of this file. The implementations +
+//  JSDocs live in the new module.
 
-export { formatDuration };
-
-/** Ensure a directory exists, creating it recursively. */
-export async function ensureDir(dir: string) {
-  await fs.mkdir(dir, { recursive: true });
-}
-
-/** Default scratchpad location for run artifacts. */
-export function defaultRunRoot(): string {
-  return path.join(os.homedir(), 'CFDStudio', 'runs');
-}
+// V1.37a — re-export the lifted helpers + the RunStage type from
+//  @main/openfoam/runner-helpers for backward compat. The IPC
+//  barrel in src/main/ipc/index.ts and the case.ts render path
+//  keep importing these names from '@main/openfoam/runner'
+//  without churn.
+export {
+  buildRunPipeline,
+  defaultRunRoot,
+  ensureDir,
+  formatDuration,
+  type RunStage,
+} from './runner-helpers';
