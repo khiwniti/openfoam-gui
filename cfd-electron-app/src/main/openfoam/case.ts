@@ -187,8 +187,15 @@ const TEMPLATE_LAYOUT: Record<CaseKind, TemplateEntry[]> = {
  *   - add system/snappyHexMeshDict
  *
  * Detection: domain.geometryKind === 'imported' OR domain.patches non-empty.
+ *
+ * V1.35b — exported for unit testing. Returns the ordered list of
+ *  templates that `renderCase` will compile + write. The function is
+ *  pure (input: Domain + CaseKind; output: TemplateEntry[]) and
+ *  testable without round-tripping through the full renderCase
+ *  pipeline. Each TemplateEntry has an `out` (path within caseDir)
+ *  and a `src` (relative path to .hbs file under templates/<kind>/).
  */
-function buildTemplateLayout(domain: Domain, kind: CaseKind): TemplateEntry[] {
+export function buildTemplateLayout(domain: Domain, kind: CaseKind): TemplateEntry[] {
   const isImported = domain.geometryKind === 'imported' || (domain.patches?.length ?? 0) > 0;
   const base = TEMPLATE_LAYOUT[kind];
   if (!isImported) return base;
