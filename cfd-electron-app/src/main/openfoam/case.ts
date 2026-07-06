@@ -13,11 +13,22 @@ import {
   PatchRefinementSchema,
   type Domain,
   type BoundaryConditions,
-  type BcField,
   type CaseKind,
-  type PatchRefinement,
   type PatchRefinements,
 } from '@shared/types';
+// V1.38 — pure string formatters extracted from the inline
+//  Handlebars.registerHelper callbacks below into
+//  @main/openfoam/case-helpers. The wrappers preserved here are
+//  thin type-coercion + SafeString-wrap shells that delegate to
+//  the pure cores; vitest exercises the cores directly. The
+//  lift preserves the public Handlebars surface
+//  ({{smootherLine solver}}, {{bcFor bcMap patchName}},
+//  {{refBlock refMap patchName}}) byte-for-byte.
+import {
+  formatBcBlock,
+  formatRefinementBlock,
+  formatSmootherLine,
+} from './case-helpers';
 
 Handlebars.registerHelper('eq', (a: unknown, b: unknown) => a === b);
 Handlebars.registerHelper('or', (a: unknown, b: unknown) => a || b);
@@ -51,30 +62,14 @@ Handlebars.registerHelper('isLES', (t: unknown) => {
  *  PBiCGStab (DIC / DILU). The helper returns the full line
  *  including the leading whitespace so the template stays
  *  read-clean.
+ *
+ *  V1.38 — pure string-construction core lifted to
+ *  @main/openfoam/case-helpers.formatSmootherLine. The Handlebars
+ *  wrapper is now a 1-line type-coerce + SafeString-wrap shell.
  */
 Handlebars.registerHelper('smootherLine', function (solver: unknown) {
   const s = typeof solver === 'string' ? solver : '';
-  let line: string;
-  switch (s) {
-    case 'GAMG':
-      line = 'smoother        GaussSeidel;';
-      break;
-    case 'smoothSolver':
-      line = 'smoother        symGaussSeidel;';
-      break;
-    case 'PCG':
-      line = 'preconditioner  DIC;';
-      break;
-    case 'PBiCG':
-      line = 'preconditioner  DILU;';
-      break;
-    case 'PBiCGStab':
-      line = 'preconditioner  DILU;';
-      break;
-    default:
-      line = 'smoother        GaussSeidel;';
-  }
-  return new Handlebars.SafeString(line);
+  return new Handlebars.SafeString(formatSmootherLine(s));
 });
 
 /**
@@ -92,27 +87,17 @@ Handlebars.registerHelper('smootherLine', function (solver: unknown) {
  *           {{bcFor ../bc.velocity name}}
  *       }
  *   {{/each}}
+ *
+ *  V1.38 — pure string-construction core lifted to
+ *  @main/openfoam/case-helpers.formatBcBlock. The Handlebars
+ *  wrapper is now a 1-line SafeString-wrap shell that delegates
+ *  to the pure core (which preserves all the defensive type
+ *  checks: typeof === 'object' for bcMap, typeof === 'string'
+ *  for patchName, Number.isFinite for the fixedValue vector
+ *  entries, etc.).
  */
 Handlebars.registerHelper('bcFor', function (bcMap: unknown, patchName: unknown) {
-  const safe: BcField = { type: 'zeroGradient' };
-  if (bcMap && typeof bcMap === 'object' && typeof patchName === 'string') {
-    const bc = (bcMap as Record<string, BcField | undefined>)[patchName];
-    if (bc && typeof bc === 'object' && typeof bc.type === 'string') safe.type = bc.type;
-    if (bc && bc.value !== undefined) safe.value = bc.value;
-  }
-  if (safe.type !== 'fixedValue') {
-    return new Handlebars.SafeString(`type ${safe.type};`);
-  }
-  const v = safe.value;
-  if (Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number' && Number.isFinite(n))) {
-    return new Handlebars.SafeString(
-      `type fixedValue;\n        value uniform (${v[0]} ${v[1]} ${v[2]});`,
-    );
-  }
-  if (typeof v === 'number' && Number.isFinite(v)) {
-    return new Handlebars.SafeString(`type fixedValue;\n        value uniform ${v};`);
-  }
-  return new Handlebars.SafeString(`type fixedValue;\n        value uniform (0 0 0);`);
+  return new Handlebars.SafeString(formatBcBlock(bcMap, patchName));
 });
 
 /**
@@ -128,19 +113,17 @@ Handlebars.registerHelper('bcFor', function (bcMap: unknown, patchName: unknown)
  *           {{refBlock ../patchRefinements name}}
  *       }
  *   {{/each}}
+ *
+ *  V1.38 — pure string-construction core lifted to
+ *  @main/openfoam/case-helpers.formatRefinementBlock. The
+ *  Handlebars wrapper is now a 1-line SafeString-wrap shell that
+ *  delegates to the pure core (which preserves all the defensive
+ *  checks: Number.isFinite for the value, Math.max/min clamp to
+ *  OpenFOAM's 0..7 range, Math.round for fractional inputs, and
+ *  the `max < min` invariant snap).
  */
 Handlebars.registerHelper('refBlock', function (refMap: unknown, patchName: unknown) {
-  let min = 0;
-  let max = 0;
-  if (refMap && typeof refMap === 'object' && typeof patchName === 'string') {
-    const r = (refMap as PatchRefinements)[patchName];
-    if (r && typeof r === 'object') {
-      if (Number.isFinite(r.min)) min = Math.max(0, Math.min(7, Math.round(r.min)));
-      if (Number.isFinite(r.max)) max = Math.max(0, Math.min(7, Math.round(r.max)));
-      if (max < min) max = min;
-    }
-  }
-  return new Handlebars.SafeString(`level (${min} ${max});`);
+  return new Handlebars.SafeString(formatRefinementBlock(refMap, patchName));
 });
 
 /**
