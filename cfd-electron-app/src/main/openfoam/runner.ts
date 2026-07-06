@@ -22,7 +22,9 @@ import {
   buildRunPipeline,
   defaultRunRoot,
   ensureDir,
+  formatBashInvocation,
   formatDuration,
+  formatTerminalPhase,
   type RunStage,
 } from './runner-helpers';
 // V1.37b — residual parser + convergence checker extracted from
@@ -187,14 +189,13 @@ async function executeRun(run: ActiveRun, opts: RunOptions) {
    *  ended. 'converged' fires instead of 'cancelled' when the
    *  convergence detector auto-stopped the solver. `contextLabel`
    *  is appended as a "during <stage>" qualifier where useful,
-   *  e.g. `during meshing`. */
+   *  e.g. `during meshing`. The pure { phase, message } pair is
+   *  computed by `formatTerminalPhase` (V1.37c lift) so the
+   *  helper is vitest-exercisable; the call site remains the
+   *  dispatch boundary (`emitPhase` writes to the IPC channel). */
   function emitTerminal(contextLabel: string) {
-    const whereSuffix = contextLabel ? ` ${contextLabel}` : "";
-    if (run.cancelledReason === "converged") {
-      emitPhase("converged", `Solver converged — auto-stopped${whereSuffix} before endTime`);
-    } else {
-      emitPhase("cancelled", `Run was cancelled${whereSuffix}`);
-    }
+    const { phase, message } = formatTerminalPhase(run.cancelledReason, contextLabel);
+    emitPhase(phase, message);
   }
   for (const stage of opts.stages) {
     if (run.cancelled) {
@@ -219,8 +220,12 @@ function phaseForStage(name: RunStage['name']): Phase {
 
 async function runStage(run: ActiveRun, stage: RunStage, opts: RunOptions): Promise<boolean> {
   return new Promise((resolve) => {
-    // Important: OpenFOAM solvers are bash scripts; always invoke via bash with sourced env.
-    const bashCmd = `source "${opts.bashrc}" >/dev/null 2>&1 && cd "${opts.caseDir}" && ${stage.command.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`;
+    // V1.37c — bash command construction (source bashrc → cd caseDir →
+    //  argv) lifted to @main/openfoam/runner-helpers.formatBashInvocation
+    //  so the space-bearing-arg JSON-quoting logic is vitest-exercisable.
+    //  Behavior is preserved verbatim — the runner's only consumer of
+    //  the returned string is `bash -lc "<bashCmd>"` below.
+    const bashCmd = formatBashInvocation(opts.bashrc, opts.caseDir, stage.command);
 
     const child = spawn('bash', ['-lc', bashCmd], {
       cwd: opts.caseDir,
@@ -347,7 +352,9 @@ export {
   buildRunPipeline,
   defaultRunRoot,
   ensureDir,
+  formatBashInvocation,
   formatDuration,
+  formatTerminalPhase,
   type RunStage,
 } from './runner-helpers';
 

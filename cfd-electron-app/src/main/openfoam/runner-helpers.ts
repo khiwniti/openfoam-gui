@@ -120,3 +120,71 @@ export function formatDuration(ms: number): string {
   const sec = s % 60;
   return [h, m, sec].map((n) => String(n).padStart(2, '0')).join(':');
 }
+
+/**
+ * V1.37c — build the bash command string that `runStage` passes to
+ *  `bash -lc`. The composition is:
+ *
+ *      source "<bashrc>" >/dev/null 2>&1 && cd "<caseDir>" && <argv...>
+ *
+ *  The bashrc + caseDir are wrapped in `"..."` (not single-quoted)
+ *  because the runner is invoked with `bash -lc`, which expects
+ *  double-quote-friendly paths and is robust against `$` / backtick
+ *  injection when the value is itself double-quoted. The argv is
+ *  forwarded verbatim except for space-bearing entries, which are
+ *  JSON-encoded (this is the same `JSON.stringify(a)` pattern
+ *  OpenFOAM's `foamExec` scripts use for argv forwarding). A
+ *  space-bearing arg is shell-quoted via the JSON-string form so
+ *  the resulting bash string parses back to the same argv.
+ *
+ *  Pure transformation (no I/O, no environment reads, no process
+ *  spawn). The runner's `runStage` consumer wraps the returned
+ *  string in `bash -lc "<return value>"` and `spawn` it. */
+export function formatBashInvocation(
+  bashrc: string,
+  caseDir: string,
+  command: readonly string[],
+): string {
+  const argv = command
+    .map((a) => (a.includes(' ') ? JSON.stringify(a) : a))
+    .join(' ');
+  return `source "${bashrc}" >/dev/null 2>&1 && cd "${caseDir}" && ${argv}`;
+}
+
+/**
+ * V1.37c — terminal-phase selector lifted from the runner's
+ *  `executeRun` executive loop. The loop checks `run.cancelledReason`
+ *  on every stage boundary to decide whether to emit `'converged'`
+ *  (the convergence detector auto-stopped the solver) or
+ *  `'cancelled'` (the user clicked Stop). The `contextLabel` is the
+ *  free-form qualifier the loop passes — `''` for the pre-loop check
+ *  (no stage was started) or `'during <stage-name>'` for the
+ *  post-stage check.
+ *
+ *  Pure (no I/O, no callback invocation). The runner's `executeRun`
+ *  call site consumes the returned pair with:
+ *
+ *      const { phase, message } = formatTerminalPhase(run.cancelledReason, ctx);
+ *      emitPhase(phase, message);
+ *
+ *  This two-step pattern (pure formatter + caller-side dispatch) is
+ *  the same one V1.36* used for the IPC reply shapers
+ *  (`formatX` returns a value, the handler emits it). It keeps the
+ *  helper vitest-exercisable without mocking the IPC `onPhase`
+ *  callback surface. */
+export function formatTerminalPhase(
+  reason: 'user' | 'converged',
+  contextLabel: string,
+): { phase: 'cancelled' | 'converged'; message: string } {
+  const whereSuffix = contextLabel ? ` ${contextLabel}` : '';
+  if (reason === 'converged') {
+    return {
+      phase: 'converged',
+      message: `Solver converged — auto-stopped${whereSuffix} before endTime`,
+    };
+  }
+  return {
+    phase: 'cancelled',
+    message: `Run was cancelled${whereSuffix}`,
+  };
+}
