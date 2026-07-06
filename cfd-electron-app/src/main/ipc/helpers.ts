@@ -189,3 +189,112 @@ export async function readResultField(
 export type ResultReadReply =
   | { ok: true; text: string }
   | { ok: false; message: string };
+
+// -------------------- V1.36d: case-flow handler payloads --------------------
+//
+// The case-flow IPC handlers (caseCreate, caseSave, caseLoad) + the local
+// `pickCaseDir()` helper all share two small pure utilities: (1) build a
+// safe-filename + timestamped case directory name under a given root,
+// and (2) wrap render-side / state-side result objects in the
+// `{ ok: true, ... } | { ok: false, message }` shape the renderer expects.
+// V1.36d lifts them so the case handlers shrink to thin shells and the
+// sanitization + stamping rules have a single testable surface (instead
+// of being buried inside the IPC barrel where they can't be exercised
+// without an electron runtime).
+
+/** Pure: replace every non-`[a-zA-Z0-9_-]` char in `label` with `_` and
+ *  slice to 60 chars. Defaults to the literal `'case'` when `label` is
+ *  undefined / empty so the directory name always has at least one
+ *  human-readable component before the timestamp. Mirrors the inline
+ *  `(label || 'case').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)` from
+ *  the original `pickCaseDir`. Exposed privately (not re-exported) so
+ *  callers use `pickCaseDirName` directly and don't go around it. */
+function sanitizeCaseLabel(label: string | undefined): string {
+  return (label || 'case').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+}
+
+/** Pure: turn a Date into a filesystem-safe timestamp suffix for a case
+ *  directory name. OpenFOAM time-names are numeric only; our case-names
+ *  use an ISO-8601 slice with `:` and `.` replaced so the path is
+ *  portable across platforms that reject those characters in filenames.
+ *  Shape: `YYYY-MM-DDTHH-MM-SS` (the leading `T` is preserved so the
+ *  operator can visually separate the date + time parts at-a-glance).
+ *  Exposed privately; use `pickCaseDirName` which calls this with
+ *  `new Date()` by default but accepts a `now: Date` override for
+ *  deterministic test pinning. */
+function formatCaseDirTimestamp(now: Date): string {
+  return now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}
+
+/** Build the full on-disk directory name for a new case under `root`.
+ *  Pure transformation: `root + sanitize(label) + '__' + isoStamp`. No
+ *  `mkdir`, no env reads, no settings cache touch. The IPC handler
+ *  composes this with `getRunRoot()` + `ensureDir()` to produce a
+ *  real directory; both side-effects stay in the barrel.
+ *
+ *  Accepts an optional `now: Date` so deterministic tests can pin the
+ *  timestamp via `vi.setSystemTime(...)` (vitest fakes `Date.now()` /
+ *  `new Date()` globally). Production callers omit it. */
+export function pickCaseDirName(
+  root: string,
+  label?: string,
+  now: Date = new Date(),
+): string {
+  const safe = sanitizeCaseLabel(label);
+  const stamp = formatCaseDirTimestamp(now);
+  return path.join(root, `${safe}__${stamp}`);
+}
+
+/** Reply the caseSave IPC handler sends to the renderer. Wraps the
+ *  out-param caseDir in the IPC-level `{ ok, path }` envelope so the
+ *  renderer can branch on success without re-validating. */
+export type CaseSaveReply = { ok: true; path: string };
+
+export function formatCaseSaveReply(rendered: { caseDir: string }): CaseSaveReply {
+  return { ok: true, path: rendered.caseDir };
+}
+
+/** Reply the caseCreate IPC handler sends to the renderer (not yet
+ *  passed through RunResultSchema.parse — see the call site for the
+ *  schema parse that follows). The `message` is the user-facing toast
+ *  copy; the `caseDir` is what the renderer immediately re-issues
+ *  caseLoad / runStart against. */
+export type CaseCreateReply = { ok: true; message: string; caseDir: string };
+
+export function formatCaseCreateReply(caseDir: string): CaseCreateReply {
+  return { ok: true, message: 'case created', caseDir };
+}
+
+/** Reply the caseLoad IPC handler sends to the renderer. Discriminated
+ *  on `ok`:
+ *    - `false` — no sidecar state file at `caseDir`; renderer shows the
+ *      empty-state message verbatim.
+ *    - `true` — spreads every field the persisted state had (kind,
+ *      domain, bc, …) plus `caseDir`. The `domain` field is included
+ *      transitively via the spread (S has a `domain` key per the
+ *      constraint) — the inline handler's "Surface the Domain
+ *      explicitly so the renderer can keep using it" snappy-fallback
+ *      intent is preserved because the spread carries it through.
+ *
+ *  V1.36d round-2 reviewer-fix: the helper is generic on `S extends
+ *  { domain: unknown }` so (a) TS statically rejects call sites that
+ *  pass a state shape without a `domain` key (the inline handler
+ *  always relies on `state.domain`), (b) the inferred return type
+ *  preserves every spread-field type AND the `domain` field's
+ *  precise type via `S['domain']` rather than collapsing to
+ *  `unknown`, and (c) the `as Record<string, unknown>` cast from
+ *  round 1 is gone — the generic constraint encodes the runtime
+ *  contract that the cast was working around.
+ *  Callers can let TS infer `S` from the loadCaseState return type
+ *  or pin it explicitly (`formatCaseLoadReply<PersistedCaseState>(...)`). */
+export type CaseLoadReply<S extends { domain: unknown }> =
+  | { ok: false; message: string }
+  | ({ ok: true; caseDir: string } & S);
+
+export function formatCaseLoadReply<S extends { domain: unknown }>(
+  state: S | null,
+  caseDir: string,
+): CaseLoadReply<S> {
+  if (!state) return { ok: false, message: 'No .cfd-app-state.json' };
+  return { ok: true, ...state, caseDir };
+}

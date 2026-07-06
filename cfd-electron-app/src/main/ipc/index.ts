@@ -31,6 +31,14 @@ import {
   //  imports this directly from @main/ipc/helpers to skip the
   //  barrel's electron import chain.
   readResultField,
+  // V1.36d — case-flow IPC handler-body lift. See the JSDoc blocks in
+  //  helpers.ts for the design rationale (separate the pure
+  //  sanitize+stamp+reply-shape logic from the impure
+  //  getRunRoot/ensureDir side-effects + saveCase composition).
+  pickCaseDirName,
+  formatCaseSaveReply,
+  formatCaseCreateReply,
+  formatCaseLoadReply,
 } from '@main/ipc/helpers';
 import { IpcChannels } from '@shared/types';
 import { dialog, shell } from 'electron';
@@ -158,7 +166,12 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
         input.label,
         input.refinements,
       );
-      return RunResultSchema.parse({ ok: true, message: 'case created', caseDir: rendered.caseDir });
+      // V1.36d — pure reply-shape lifted to helpers.formatCaseCreateReply;
+      //  RunResultSchema.parse then enforces the wire-format contract
+      //  without re-inlining the literal here. Handler shrinks by 1
+      //  literal but the bigger win is that the `message: 'case created'`
+      //  user-facing copy is now testable + searchable from one place.
+      return RunResultSchema.parse(formatCaseCreateReply(rendered.caseDir));
     },
   );
 
@@ -182,7 +195,12 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
         undefined,
         input.refinements,
       );
-      return { ok: true, path: rendered.caseDir };
+      // V1.36d — reply shape lifted to helpers.formatCaseSaveReply;
+      //  pairs structurally with the caseCreate reply above but the
+      //  path field differs (the renderer treats caseSave as a
+      //  in-place mutation — the `path` key signals "saved to" not
+      //  "created at").
+      return formatCaseSaveReply(rendered);
     },
   );
 
@@ -191,10 +209,12 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
     async (_evt, args: unknown) => {
       const input = z.object({ caseDir: z.string() }).parse(args);
       const state = await loadCaseState(input.caseDir);
-      if (!state) return { ok: false, message: 'No .cfd-app-state.json' };
-      // Surface the Domain explicitly so the renderer can keep using it (snappy
-      // solver/cores fall back to this when no recent Build Case is in memory).
-      return { ok: true, ...state, caseDir: input.caseDir, domain: state.domain };
+      // V1.36d — discriminator (null → ok:false, present → ok:true w/
+      //  spread + domain-resurface) lifted to helpers.formatCaseLoadReply.
+      //  The IPC handler now only owns the parse + loadCaseState call;
+      //  the reply shape + the comment-intended domain-resurface logic
+      //  lives in a testable helper.
+      return formatCaseLoadReply(state, input.caseDir);
     },
   );
 
@@ -381,9 +401,11 @@ function settingsPath(): string {
 async function pickCaseDir(label?: string): Promise<string> {
   const root = await getRunRoot();
   await ensureDir(root);
-  const safe = (label || 'case').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  return path.join(root, `${safe}__${stamp}`);
+  // V1.36d — pure filename assembly (sanitize + ISO stamp + join)
+  //  delegated to helpers.pickCaseDirName. The impure prelude
+  //  (getRunRoot needs the settings cache + ensureDir writes to disk)
+  //  stays in the barrel.
+  return pickCaseDirName(root, label);
 }
 
 // ---------------- V1.36a: pure-fn handlers, re-exported ----------------
@@ -405,6 +427,12 @@ export {
   readSettingsFromDisk,
   writeSettingsToDisk,
   readResultField,
+  // V1.36d — case-flow pure helpers lifted from the caseCreate /
+  //  caseSave / caseLoad / pickCaseDir IPC handler bodies.
+  pickCaseDirName,
+  formatCaseSaveReply,
+  formatCaseCreateReply,
+  formatCaseLoadReply,
 };
 
 export type { RunResult };
