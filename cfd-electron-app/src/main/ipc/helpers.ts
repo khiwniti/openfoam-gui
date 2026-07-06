@@ -14,9 +14,10 @@
  * renderer never sees an IPC-level rejection when fs says ENOENT.
  */
 import { promises as fs } from 'node:fs';
+import { Buffer } from 'node:buffer';
 import path from 'node:path';
 import { loadCaseState } from '@main/openfoam/case';
-import { AppSettingsSchema, type CaseKind, type AppSettings } from '@shared/types';
+import { AppSettingsSchema, type CaseKind, type AppSettings, type GeometryFormat } from '@shared/types';
 
 export type CaseListing = { dir: string; name: string; kind: CaseKind; mtime: number };
 export type OpenPathReply = { ok: boolean; opened: string; error?: string };
@@ -297,4 +298,58 @@ export function formatCaseLoadReply<S extends { domain: unknown }>(
 ): CaseLoadReply<S> {
   if (!state) return { ok: false, message: 'No .cfd-app-state.json' };
   return { ok: true, ...state, caseDir };
+}
+
+// -------------------- V1.36e: geometry file pair payloads --------------------
+//
+// The geometryFilePickAndRead + geometryFileWrite IPC handlers share
+// three small pure / fs-based utilities: (1) a format→file-extension
+// lookup used to populate the OS file-picker filters, (2) a buffer
+// →Uint8Array-view shaping for the IPC structured-clone envelope, and
+// (3) the mkdir-recursive + writeFile pair that the write handler
+// repeated inline. V1.36e lifts them so the two geometry handlers
+// shrink to thin shells and each utility has a single testable
+// surface (the `dialog.showOpenDialog` call stays inline because
+// it's electron-coupled; the dialog-config *builder* is small enough
+// to leave inline too).
+
+/** Pure: map a `GeometryFormat` enum member to the corresponding
+ *  CAD/CFD file extension. Used by the geometryFilePickAndRead
+ *  handler to populate the OS file-picker's `filters` list. Mirrors
+ *  the inline `format === 'STEP' ? 'stp' : format === 'IGES' ? 'igs'
+ *  : 'stl'` ternary from the original handler. `STL` is the
+ *  default-fallthrough (any future format addition that isn't STEP or
+ *  IGES will land here, preserving the original "STL is everything
+ *  else" semantics). */
+export function pickFormatExtension(format: GeometryFormat): 'stp' | 'igs' | 'stl' {
+  if (format === 'STEP') return 'stp';
+  if (format === 'IGES') return 'igs';
+  return 'stl';
+}
+
+/** Reply the geometryFilePickAndRead IPC handler sends to the renderer.
+ *  Shape: `{ path, bytes }` where `bytes` is a `Uint8Array` view
+ *  over the on-disk file's underlying `ArrayBuffer` (zero-copy;
+ *  structured-cloneable across Electron's IPC channel — `Buffer`
+ *  itself is NOT cloneable, the view is what survives the bridge).
+ *  Mirrors the inline `new Uint8Array(buf.buffer, buf.byteOffset,
+ *  buf.byteLength)` from the original handler. */
+export type GeometryReadReply = { path: string; bytes: Uint8Array };
+
+export function formatGeometryReadReply(buf: Buffer, filePath: string): GeometryReadReply {
+  return { path: filePath, bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) };
+}
+
+/** Write the supplied `Uint8Array` bytes to `target` after creating
+ *  the parent directory tree if missing (mkdir-recursive, matches the
+ *  `mkdir -p` semantics a fresh-user-first-save scenario requires).
+ *  Mirrors the inline `fs.mkdir(path.dirname(target), { recursive:
+ *  true }) + fs.writeFile(target, Buffer.from(bytes))` pair from the
+ *  geometryFileWrite IPC handler. Errors propagate to the caller
+ *  (the IPC handler currently lets Electron translate them to a
+ *  generic rejection; a future V.x may want a softer envelope
+ *  analogous to readSettingsFromDisk's no-throw contract). */
+export async function writeGeometryFile(target: string, bytes: Uint8Array): Promise<void> {
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, Buffer.from(bytes));
 }

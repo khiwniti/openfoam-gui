@@ -39,6 +39,14 @@ import {
   formatCaseSaveReply,
   formatCaseCreateReply,
   formatCaseLoadReply,
+  // V1.36e — geometry file pair handler-body lift (format→ext
+  //  lookup, Buffer→Uint8Array view shaping, mkdir-recursive +
+  //  writeFile composition). Same lift rationale as V1.36a/d: the
+  //  electron-coupled `dialog.showOpenDialog` call stays inline,
+  //  the pure config bits move to helpers.
+  pickFormatExtension,
+  formatGeometryReadReply,
+  writeGeometryFile,
 } from '@main/ipc/helpers';
 import { IpcChannels } from '@shared/types';
 import { dialog, shell } from 'electron';
@@ -341,7 +349,10 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
       //  `z.object({ format: enum })` shape. Vitest drift-tests the
       //  named schema without needing electron's `dialog` import.
       const { format } = GeometryFilePickArgsSchema.parse(args);
-      const ext = format === 'STEP' ? 'stp' : format === 'IGES' ? 'igs' : 'stl';
+      // V1.36e -- extension picker lifted to helpers.pickFormatExtension.
+      //  The dialog.showOpenDialog call stays inline (electron-coupled)
+      //  but the format→ext mapping has a single testable surface.
+      const ext = pickFormatExtension(format);
       const result = await dialog.showOpenDialog({
         title: `Import ${format} geometry`,
         properties: ['openFile'],
@@ -353,8 +364,11 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
       if (result.canceled || result.filePaths.length === 0) return null;
       const filePath = result.filePaths[0]!;
       const buf = await fs.readFile(filePath);
-      // Return Uint8Array view (structured-cloneable across IPC).
-      return { path: filePath, bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) };
+      // V1.36e -- Uint8Array view construction lifted to
+      //  helpers.formatGeometryReadReply (preserves the original
+      //  zero-copy view shape; renderer side receives a structured-
+      //  cloneable Uint8Array over the same ArrayBuffer).
+      return formatGeometryReadReply(buf, filePath);
     },
   );
 
@@ -364,8 +378,10 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
       // V1.35c -- parse via the named GeometryFileWriteArgsSchema.
       //  Same lift rationale as geometryFilePickAndRead above.
       const { path: target, bytes } = GeometryFileWriteArgsSchema.parse(args);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, Buffer.from(bytes));
+      // V1.36e -- mkdir-recursive parent + writeFile composition
+      //  lifted to helpers.writeGeometryFile. Handler shrinks from
+      //  2 fs calls to 1 delegation.
+      await writeGeometryFile(target, bytes);
     },
   );
 
@@ -433,6 +449,14 @@ export {
   formatCaseSaveReply,
   formatCaseCreateReply,
   formatCaseLoadReply,
+  // V1.36e — geometry file pair pure / fs-based helpers lifted
+  //  from the geometryFilePickAndRead + geometryFileWrite IPC
+  //  handler bodies. See JSDoc in helpers.ts for the design
+  //  rationale (separate the pure format→ext + Buffer→Uint8Array
+  //  bits from the electron-coupled dialog.showOpenDialog call).
+  pickFormatExtension,
+  formatGeometryReadReply,
+  writeGeometryFile,
 };
 
 export type { RunResult };
