@@ -33,7 +33,7 @@ import type { BcField, PatchRefinements } from '@shared/types';
 //  triplicate the 50-line `makeTestDomain` body. Tests
 //  override individual fields to exercise the snappy-driven
 //  `origin` / `bbox` branches of formatLocationInMesh.
-import { makeTestDomain } from './case-test-helpers';
+import { makeRawTestDomain, makeTestDomain } from './case-test-helpers';
 
 describe('formatSmootherLine', () => {
   it("returns the GAMG / GaussSeidel line for solver='GAMG'", () => {
@@ -223,12 +223,8 @@ describe('formatResolution', () => {
   });
 
   it("renders the zero case for an empty domain (defensive — runtime is downstream of Zod parse)", () => {
-    // Direct number override (skips the DomainSchema's positive-int
-    //  guard) — pins the formatter's no-validation contract: it
-    //  trusts the input shape that buildRenderContext + Zod
-    //  provide. If a future refactor adds Zod-style validation
-    //  here, this test will fail intentionally.
-    expect(formatResolution(makeTestDomain({ nx: 0, ny: 0, nz: 0 }))).toBe('0 0 0');
+    // Safe-render fallback: formatter trusts its input shape; Zod is downstream.
+    expect(formatResolution(makeRawTestDomain({ nx: 0, ny: 0, nz: 0 }))).toBe('0 0 0');
   });
 });
 
@@ -271,11 +267,7 @@ describe('formatLocationInMesh', () => {
   });
 
   it("coerces non-finite Lx/Ly/Lz to '0' (defensive — runtime is downstream of Zod parse)", () => {
-    // Direct number override (skips the DomainSchema's
-    //  is-finite guard) — pins the formatter's
-    //  non-finite-coerced-to-'0' contract. The Zod schema is
-    //  the source of truth for the user-input contract; the
-    //  formatter is the safe-render fallback.
-    expect(formatLocationInMesh(makeTestDomain({ Lx: Number.POSITIVE_INFINITY, Ly: Number.NaN, Lz: 1 }))).toBe('0 0 0.5');
+    // Safe-render fallback: formatter trusts its input shape; Zod is downstream.
+    expect(formatLocationInMesh(makeRawTestDomain({ Lx: Number.POSITIVE_INFINITY, Ly: Number.NaN, Lz: 1 }))).toBe('0 0 0.5');
   });
 });

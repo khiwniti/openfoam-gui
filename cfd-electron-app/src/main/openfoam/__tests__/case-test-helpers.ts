@@ -1,34 +1,59 @@
 /**
- * V1.41 — shared test fixture for the case.ts pure-fn suite.
+ * V1.42 — schema-derivative test fixture for the case.ts
+ *  pure-fn suite.
  *
- * The `makeTestDomain` helper builds a minimal valid Domain
- *  suitable for the case-formatters / case-emit-flags /
- *  case-context unit tests. It was triplicated across the
- *  3 focused test files after V1.41's case-helpers.ts split
- *  (the V1.38 / V1.38b test file was a single-file suite
- *  that didn't need to share its fixture). V1.41 lifts the
- *  helper here so:
- *    * the Domain shape lives in exactly one place (a
- *      future V1.42 adding a new Domain field updates the
- *      fixture in 1 place, not 3);
- *    * the 3 focused test files shrink back to pure test
- *      bodies, with the build-step noise removed;
- *    * the helper is colocated with the case.ts test
- *      directory so the test file → fixture file lookup
- *      stays obvious for future maintainers.
+ * V1.41 extracted the triplicated `makeTestDomain` helper
+ *  from the 3 case.ts test files into this shared module.
+ *  The V1.41 extraction was a 50-LOC hardcoded object that
+ *  duplicated the Domain shape — a schema-snapshot. V1.42
+ *  converts it to a schema-derivation: the helper now passes
+ *  a minimal required-fields object to `DomainSchema.parse(...)`
+ *  and lets the Zod schema's `.default(...)` clauses fill in
+ *  the 14 default fields (purgeWrite, numerics, schemes,
+ *  solverConfigs, relaxationFactors, adaptiveTimeStep, the
+ *  6 turbulenceCoefficients* slots, initialConditions,
+ *  patches). The 2 optional fields (bbox, origin) stay
+ *  `undefined` unless explicitly provided via `overrides`.
  *
- * Mirrors the OpenFOAM-cavity defaults from the
- *  SOLVER_CONTROLS_DEFAULTS map in the renderer's Zustand
- *  store; specific tests override individual fields to
- *  exercise the per-solver routing of
- *  shouldEmitRelaxationFactors + shouldEmitAdaptiveTimeStep
- *  and the snappy-driven `origin` / `bbox` branches of
- *  buildRenderContext.
+ * Why this matters: with the V1.41 snapshot pattern, a
+ *  future DomainSchema change (e.g., V1.43 adding a new
+ *  required field) would silently not include the new field
+ *  in the fixture, and tests that depend on the new field's
+ *  default behavior would fail with a confusing
+ *  "field is undefined" error rather than a "fixture is
+ *  missing the new field" error. With the V1.42 derivation
+ *  pattern, the parse call surfaces the missing-required-field
+ *  error at test-suite load time, so the fixture update is
+ *  forced before the test suite can run.
+ *
+ * The 16 required fields (kind, Lx/Ly/Lz, nx/ny/nz, nu/rho,
+ *  solver, turbulence, endTime, deltaT, writeInterval, cores,
+ *  geometryKind) live in the explicit object below; the 14
+ *  default fields are filled in by DomainSchema.parse; the
+ *  2 optional fields (bbox, origin) are only present when
+ *  a test overrides them.
  */
+import { DomainSchema } from '@shared/types';
 import type { Domain } from '@shared/types';
 
 export function makeTestDomain(overrides: Partial<Domain> = {}): Domain {
-  return {
+  // V1.42 — minimal required-fields object. The schema fills
+  //  in the 14 default fields (purgeWrite=0, numerics={...},
+  //  schemes={...}, solverConfigs={...}, relaxationFactors={...},
+  //  adaptiveTimeStep={...}, turbulenceCoefficients={...},
+  //  turbulenceCoefficientsKOmegaSST={...},
+  //  turbulenceCoefficientsSpalartAllmaras={...},
+  //  turbulenceCoefficientsLES={...},
+  //  turbulenceCoefficientsKEqn={...},
+  //  turbulenceCoefficientsCDES={...},
+  //  initialConditions={...}, patches=[]); the 2 optional
+  //  fields (bbox, origin) stay undefined unless overridden.
+  //  Tests override individual fields via the `overrides`
+  //  spread to exercise the per-solver routing of
+  //  shouldEmitRelaxationFactors + shouldEmitAdaptiveTimeStep
+  //  and the snappy-driven `origin` / `bbox` branches of
+  //  buildRenderContext + formatLocationInMesh.
+  return DomainSchema.parse({
     kind: 'cavity',
     Lx: 1,
     Ly: 1,
@@ -43,50 +68,33 @@ export function makeTestDomain(overrides: Partial<Domain> = {}): Domain {
     endTime: 1,
     deltaT: 0.001,
     writeInterval: 100,
-    purgeWrite: 0,
-    numerics: {
-      enabled: true,
-      nNonOrthogonalCorrectors: 0,
-      nCorrectors: 2,
-      nOuterCorrectors: 1,
-      residualControl: 1e-4,
-      residualControlByField: {},
-    },
-    schemes: {
-      ddtDefault: 'Euler',
-      gradDefault: 'Gauss linear',
-      divDefault: 'none',
-      laplacianDefault: 'Gauss linear corrected',
-      interpolationDefault: 'linear',
-      snGradDefault: 'corrected',
-      fieldDivs: {},
-      fieldLaplacians: {},
-      fieldSnGrads: {},
-    },
-    solverConfigs: {
-      p: { solver: 'GAMG', tolerance: 1e-7, relTol: 0.01 },
-      U: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 },
-      turbulence: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 },
-    },
-    relaxationFactors: { enabled: false, fields: {}, equations: {} },
-    adaptiveTimeStep: { enabled: false, maxCo: 1 },
-    turbulenceCoefficients: { Cmu: 0.09, C1: 1.44, C2: 1.92, sigmak: 1.0, sigmaEps: 1.3 },
-    turbulenceCoefficientsKOmegaSST: {
-      alphaK1: 0.85, alphaK2: 1.0, alphaOmega1: 0.5, alphaOmega2: 0.856,
-      beta1: 0.075, beta2: 0.0828, betaStar: 0.09, C1: 2.0,
-      gamma1: 0.5555555555, gamma2: 0.875, sigmaK: 0.6, sigmaOmega: 0.5,
-    },
-    turbulenceCoefficientsSpalartAllmaras: {
-      sigmaNut: 0.667, kappa: 0.41, Cb1: 0.1355, Cb2: 0.622,
-      Cw1: 0.3, Cw2: 0.06, Cw3: 2.0, Cv1: 7.1, Cv2: 5.0,
-    },
-    turbulenceCoefficientsLES: { Cs: 0.2, Cw: 0.325 },
-    turbulenceCoefficientsKEqn: { Ck: 0.094, Ce1: 1.048, Ce2: 1.048 },
-    turbulenceCoefficientsCDES: { CDES: 0.65 },
-    initialConditions: { velocity: { x: 0, y: 0, z: 0 }, pressure: 0 },
     cores: 1,
     geometryKind: 'parametric',
-    patches: [],
     ...overrides,
-  };
+  });
+}
+
+/**
+ * V1.42 — schema-bypass variant of `makeTestDomain` for tests
+ *  that intentionally pass invalid values (0, NaN, Infinity)
+ *  to exercise defensive code paths in the formatters. The
+ *  `DomainSchema.parse(...)` call inside `makeTestDomain`
+ *  rejects these values (`z.number().positive()` rejects 0
+ *  and NaN), so the 2 defensive tests in case-formatters.test.ts
+ *  need a way to build a fixture that passes through the parse
+ *  step on a valid base, then has the invalid values applied
+ *  AFTER the parse. This helper does exactly that in 1 named
+ *  call site so the bypass intent is explicit:
+ *
+ *    const domain = makeRawTestDomain({ Lx: Infinity, Ly: NaN });
+ *
+ *  The formatter under test receives the invalid values and
+ *  exercises the defensive code path (e.g., formatLocationInMesh
+ *  coerces non-finite Lx/Ly/Lz to '0'). The valid base still
+ *  runs through DomainSchema.parse, so the V1.42 drift-safety
+ *  benefit (new required fields surface as parse errors) is
+ *  preserved.
+ */
+export function makeRawTestDomain(overrides: Partial<Domain> = {}): Domain {
+  return { ...makeTestDomain(), ...overrides };
 }
