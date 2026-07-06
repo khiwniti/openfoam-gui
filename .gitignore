@@ -1,6 +1,6 @@
 # Cross-cutting OS/IDE junk only.
 # Each subproject keeps its own rules in cfd-electron-app/.gitignore,
-# chili3d/.gitignore, and chili3d/plugins/*/.gitignore.
+# vendor/chili3d/.gitignore, and vendor/chili3d/plugins/*/.gitignore.
 
 .DS_Store
 .vscode/
