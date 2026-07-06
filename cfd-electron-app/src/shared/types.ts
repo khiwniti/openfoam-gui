@@ -1936,3 +1936,100 @@ export type ResultReadArgs = z.infer<typeof ResultReadArgsSchema>;
 //  `z.object({ runId: z.string() })` parse.
 export const RunCancelArgsSchema = z.object({ runId: z.string() });
 export type RunCancelArgs = z.infer<typeof RunCancelArgsSchema>;
+
+// V1.40 -- IPC envelope schema for the caseCreate handler. The full
+//  payload (kind + domain + bc + optional label + optional per-patch
+//  refinements) is the most structurally-complex envelope in the
+//  IPC surface; the inline `z.object({...})` parse in the caseCreate
+//  handler references 4 sub-schemas (CaseKindSchema, DomainSchema,
+//  BoundaryConditionsSchema, PatchRefinementSchema). Lifting to a
+//  named schema pairs the V1.36c/V1.36f drift-safety rationale --
+//  the wire-format contract is testable without pulling in Electron's
+//  `ipcMain` (the IPC handler imports `electron`, which is
+//  unavailable in vitest's node env).
+//
+//  The `label` and `refinements` fields stay optional to match the
+//  inline behavior: a renderer payload without a label falls through
+//  to the IPC handler's `pickCaseDir(undefined)` which uses the
+//  default-fallthrough 'case' label; a payload without refinements
+//  parses to `{}` and the case-helpers' `buildRenderContext` reads
+//  it as an empty per-patch map (every patch renders as `level
+//  (0 0);`). Non-strict by convention (no `.strict()` on the parent
+//  object) -- a future renderer metadata key would silently strip
+//  rather than throw, matching the V1.36c / V1.36f / RunStartEnvelopeSchema
+//  pattern.
+export const CaseCreateArgsSchema = z.object({
+  kind: CaseKindSchema,
+  domain: DomainSchema,
+  bc: BoundaryConditionsSchema,
+  label: z.string().optional(),
+  refinements: z.record(z.string(), PatchRefinementSchema).optional(),
+});
+export type CaseCreateArgs = z.infer<typeof CaseCreateArgsSchema>;
+
+// V1.40 -- IPC envelope schema for the caseSave handler. Mirrors
+//  CaseCreateArgsSchema but takes a `caseDir` (the on-disk directory
+//  to overwrite) instead of a `label` (the new directory's
+//  human-readable component). caseSave is the in-place mutation
+//  path: the renderer hands the IPC the existing caseDir + a fresh
+//  domain + bc + refinements, the IPC re-renders into the same
+//  directory, and the .cfd-app-state.json sidecar is rewritten.
+//  Lifting to a named schema mirrors the caseCreate lift rationale
+//  (drift-safety + electron-free testability). The optional
+//  `refinements` field matches the caseCreate schema; the caseDir
+//  is required (no default -- the renderer's "Save" button
+//  always has a target directory).
+export const CaseSaveArgsSchema = z.object({
+  caseDir: z.string(),
+  kind: CaseKindSchema,
+  domain: DomainSchema,
+  bc: BoundaryConditionsSchema,
+  refinements: z.record(z.string(), PatchRefinementSchema).optional(),
+});
+export type CaseSaveArgs = z.infer<typeof CaseSaveArgsSchema>;
+
+// V1.40 -- IPC envelope schema for the caseLoad handler. Simple
+//  1-field envelope (the on-disk case directory to read). Lifting
+//  to a named schema is for drift-safety-pair uniformity with the
+//  other case-flow envelopes (CaseCreateArgsSchema +
+//  CaseSaveArgsSchema) rather than for any complex field-shape
+//  reason -- the inline `z.object({ caseDir: z.string() })` is
+//  already a 1-liner. Non-strict by convention (no `.strict()`).
+export const CaseLoadArgsSchema = z.object({ caseDir: z.string() });
+export type CaseLoadArgs = z.infer<typeof CaseLoadArgsSchema>;
+
+// V1.40 -- IPC envelope schema for the resultsList handler. Lists
+//  the numeric solver-time directories under a case. The handler
+//  delegates the actual fs read to `parseResultTimes(caseDir)` in
+//  @main/ipc/helpers -- the envelope is just the caseDir string.
+//  Non-strict by convention.
+export const ResultsListArgsSchema = z.object({ caseDir: z.string() });
+export type ResultsListArgs = z.infer<typeof ResultsListArgsSchema>;
+
+// V1.40 -- IPC envelope schema for the resultsListFields handler.
+//  Lists the field-file names under a single
+//  `<caseDir>/<time>/` directory. `time` is `z.number()` (not
+//  `z.string()`) because the renderer surfaces time directories
+//  as a parsed number list via `parseResultTimes` (the IPC's
+//  helper) and the wire sends back the same numeric value; the
+//  `path.join(caseDir, String(time), field)` in `parseResultFields`
+//  does the textual coercion downstream. Non-strict by convention.
+export const ResultsListFieldsArgsSchema = z.object({
+  caseDir: z.string(),
+  time: z.number(),
+});
+export type ResultsListFieldsArgs = z.infer<typeof ResultsListFieldsArgsSchema>;
+
+// V1.40 -- IPC envelope schema for the resultsRevealVTK handler.
+//  Reveals the case's VTK output (or the case dir itself if VTK
+//  hasn't been written yet) in the OS file manager via
+//  `shell.showItemInFolder`. 1-field envelope; non-strict.
+export const ResultsRevealVTKArgsSchema = z.object({ caseDir: z.string() });
+export type ResultsRevealVTKArgs = z.infer<typeof ResultsRevealVTKArgsSchema>;
+
+// V1.40 -- IPC envelope schema for the resultsOpenVTKDir handler.
+//  Opens the case's VTK output (or the case dir itself if VTK
+//  hasn't been written yet) via `shell.openPath`. 1-field envelope;
+//  non-strict.
+export const ResultsOpenVTKDirArgsSchema = z.object({ caseDir: z.string() });
+export type ResultsOpenVTKDirArgs = z.infer<typeof ResultsOpenVTKDirArgsSchema>;

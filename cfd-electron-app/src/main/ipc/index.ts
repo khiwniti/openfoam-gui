@@ -75,6 +75,21 @@ import {
   VerifyBashrcArgsSchema,
   ResultReadArgsSchema,
   RunCancelArgsSchema,
+  // V1.40 — 7 additional IPC envelope schemas lifted from the
+  //  previously-inline `z.object({...}).parse(args)` calls in the
+  //  case-flow + results-flow + geometry-flow handlers. The
+  //  lift mirrors the V1.35c / V1.36c / V1.36f drift-safety-pair
+  //  pattern (the wire-format contract is testable without
+  //  pulling in Electron's `ipcMain`). The drift-safety tests
+  //  for all 7 live in
+  //  src/shared/__tests__/ipc-args-schemas.test.ts.
+  CaseCreateArgsSchema,
+  CaseSaveArgsSchema,
+  CaseLoadArgsSchema,
+  ResultsListArgsSchema,
+  ResultsListFieldsArgsSchema,
+  ResultsRevealVTKArgsSchema,
+  ResultsOpenVTKDirArgsSchema,
   PatchRefinementSchema,
   RunResultSchema,
   // V1.31a — extracted from the previously-inline IPC envelope so
@@ -159,18 +174,20 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.caseCreate,
     async (_evt, args: unknown): Promise<RunResult> => {
-      const input = z
-        .object({
-          kind: CaseKindSchema,
-          domain: DomainSchema,
-          bc: BoundaryConditionsSchema,
-          label: z.string().optional(),
-          // V1.4 — optional per-patch refinement map. Defaults to {} if
-          // omitted, so legacy renderer payloads (or a cleared editor) emit
-          // `(0 0)` for every patch.
-          refinements: z.record(z.string(), PatchRefinementSchema).optional(),
-        })
-        .parse(args);
+      // V1.40 — parse via the named CaseCreateArgsSchema from
+      //  @shared/types instead of the previously-inline
+      //  `z.object({ kind, domain, bc, label?, refinements? })`
+      //  shape. Mirrors the V1.35c / V1.36c / V1.36f
+      //  drift-safety-pair rationale (wire-format contract is
+      //  testable without pulling in Electron's `ipcMain`). The
+      //  optional `label` and `refinements` fields are preserved
+      //  verbatim — a renderer payload without a label falls
+      //  through to the IPC handler's `pickCaseDir(undefined)`
+      //  which uses the default-fallthrough 'case' label; a
+      //  payload without refinements parses to `{}` and the
+      //  case-helpers' `buildRenderContext` reads it as an empty
+      //  per-patch map.
+      const input = CaseCreateArgsSchema.parse(args);
       const dir = await pickCaseDir(input.label);
       await ensureDir(dir);
       const rendered = await saveCase(
@@ -193,15 +210,13 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.caseSave,
     async (_evt, args: unknown) => {
-      const input = z
-        .object({
-          caseDir: z.string(),
-          kind: CaseKindSchema,
-          domain: DomainSchema,
-          bc: BoundaryConditionsSchema,
-          refinements: z.record(z.string(), PatchRefinementSchema).optional(),
-        })
-        .parse(args);
+      // V1.40 — parse via the named CaseSaveArgsSchema from
+      //  @shared/types instead of the previously-inline
+      //  `z.object({ caseDir, kind, domain, bc, refinements? })`
+      //  shape. Same drift-safety-pair rationale as caseCreate.
+      //  The `caseDir` field is required (no default — the
+      //  renderer's "Save" button always has a target directory).
+      const input = CaseSaveArgsSchema.parse(args);
       const rendered = await saveCase(
         input.kind,
         input.domain,
@@ -222,7 +237,12 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.caseLoad,
     async (_evt, args: unknown) => {
-      const input = z.object({ caseDir: z.string() }).parse(args);
+      // V1.40 — parse via the named CaseLoadArgsSchema from
+      //  @shared/types instead of the previously-inline
+      //  `z.object({ caseDir: z.string() })` shape. 1-field
+      //  envelope, lifted for drift-safety-pair uniformity with
+      //  CaseCreateArgsSchema + CaseSaveArgsSchema.
+      const input = CaseLoadArgsSchema.parse(args);
       const state = await loadCaseState(input.caseDir);
       // V1.36d — discriminator (null → ok:false, present → ok:true w/
       //  spread + domain-resurface) lifted to helpers.formatCaseLoadReply.
@@ -300,7 +320,12 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.resultsList,
     async (_evt, args: unknown) => {
-      const { caseDir } = z.object({ caseDir: z.string() }).parse(args);
+      // V1.40 — parse via the named ResultsListArgsSchema from
+      //  @shared/types instead of the previously-inline
+      //  `z.object({ caseDir: z.string() })` shape. 1-field
+      //  envelope, lifted for drift-safety-pair uniformity with
+      //  the other IPC envelope schemas.
+      const { caseDir } = ResultsListArgsSchema.parse(args);
       return { ok: true, times: await parseResultTimes(caseDir) };
     },
   );
@@ -311,9 +336,16 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.resultsListFields,
     async (_evt, args: unknown) => {
-      const { caseDir, time } = z
-        .object({ caseDir: z.string(), time: z.number() })
-        .parse(args);
+      // V1.40 — parse via the named ResultsListFieldsArgsSchema
+      //  from @shared/types instead of the previously-inline
+      //  `z.object({ caseDir, time })` shape. `time` is
+      //  `z.number()` (not `z.string()`) because the renderer
+      //  surfaces time directories as a parsed number list via
+      //  `parseResultTimes` (see helpers.ts) and the wire sends
+      //  back the same numeric value; the `path.join(caseDir,
+      //  String(time), field)` in `parseResultFields` does the
+      //  textual coercion downstream.
+      const { caseDir, time } = ResultsListFieldsArgsSchema.parse(args);
       return { ok: true, files: await parseResultFields(caseDir, time) };
     },
   );
@@ -325,7 +357,10 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.resultsRevealVTK,
     async (_evt, args: unknown) => {
-      const { caseDir } = z.object({ caseDir: z.string() }).parse(args);
+      // V1.40 — parse via the named ResultsRevealVTKArgsSchema
+      //  from @shared/types instead of the previously-inline
+      //  `z.object({ caseDir: z.string() })` shape.
+      const { caseDir } = ResultsRevealVTKArgsSchema.parse(args);
       const target = await resolveResultTarget(caseDir);
       shell.showItemInFolder(target);
       return { ok: true, revealed: target };
@@ -335,7 +370,10 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   ipcMain.handle(
     IpcChannels.resultsOpenVTKDir,
     async (_evt, args: unknown) => {
-      const { caseDir } = z.object({ caseDir: z.string() }).parse(args);
+      // V1.40 — parse via the named ResultsOpenVTKDirArgsSchema
+      //  from @shared/types instead of the previously-inline
+      //  `z.object({ caseDir: z.string() })` shape.
+      const { caseDir } = ResultsOpenVTKDirArgsSchema.parse(args);
       const target = await resolveResultTarget(caseDir);
       // openPath returns '' on success, or an error string. We swallow the
       // error string into the IPC reply so the renderer can show it.
