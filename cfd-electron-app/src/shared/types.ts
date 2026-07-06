@@ -1926,3 +1926,13 @@ export const ResultReadArgsSchema = z.object({
   field: z.string(),
 });
 export type ResultReadArgs = z.infer<typeof ResultReadArgsSchema>;
+
+// V1.36f -- IPC envelope schema for the runCancel handler. Pairs the
+//  runId string into a typed envelope so the renderer/main wire-format
+//  contract is testable without pulling in Electron (same drift-safety
+//  rationale as V1.35c's GeometryFilePick/WriteArgsSchema and
+//  V1.36c's VerifyBashrc/ResultReadArgsSchema). The runCancel IPC
+//  handler uses this named schema instead of the previously-inline
+//  `z.object({ runId: z.string() })` parse.
+export const RunCancelArgsSchema = z.object({ runId: z.string() });
+export type RunCancelArgs = z.infer<typeof RunCancelArgsSchema>;

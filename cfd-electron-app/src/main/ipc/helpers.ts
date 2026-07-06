@@ -353,3 +353,29 @@ export async function writeGeometryFile(target: string, bytes: Uint8Array): Prom
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, Buffer.from(bytes));
 }
+
+// -------------------- V1.36f: run-cancel reply shaper --------------------
+//
+// The runCancel IPC handler's inline body returned a small
+// `{ ok: cancelRun(runId), runId }` literal. V1.36f lifts the
+// envelope-shape assembly to a named helper so the `ok: true|false`
+// contract has a single testable surface and the IPC handler shrinks
+// to a thin parse + cancelRun + delegation shell. The envelope
+// schema (RunCancelArgsSchema) lives in @shared/types per the
+// V1.35c/V1.36c drift-safety-pair pattern; the reply shaper lives
+// here because it's electron-free and benefits from direct vitest
+// coverage without mocking the IPC handler's call site.
+
+/** Reply the runCancel IPC handler sends to the renderer. The `ok`
+ *  field is the boolean return of `cancelRun(runId)` from
+ *  @main/openfoam/runner — true if a live run was found + cancelled,
+ *  false if no such runId was active. The `runId` is echoed back
+ *  verbatim so the renderer can correlate the reply with the
+ *  in-flight cancel click (the IPC is fire-and-forget from the
+ *  renderer's perspective; the echo is the only way the renderer
+ *  can know which run was affected). */
+export type RunCancelReply = { ok: boolean; runId: string };
+
+export function formatRunCancelReply(canceled: boolean, runId: string): RunCancelReply {
+  return { ok: canceled, runId };
+}

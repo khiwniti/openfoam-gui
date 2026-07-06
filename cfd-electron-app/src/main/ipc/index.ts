@@ -47,6 +47,7 @@ import {
   pickFormatExtension,
   formatGeometryReadReply,
   writeGeometryFile,
+  formatRunCancelReply,
 } from '@main/ipc/helpers';
 import { IpcChannels } from '@shared/types';
 import { dialog, shell } from 'electron';
@@ -68,6 +69,7 @@ import {
   //  src/shared/__tests__/verify-bashrc-args.test.ts.
   VerifyBashrcArgsSchema,
   ResultReadArgsSchema,
+  RunCancelArgsSchema,
   PatchRefinementSchema,
   RunResultSchema,
   // V1.31a — extracted from the previously-inline IPC envelope so
@@ -273,8 +275,13 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   );
 
   ipcMain.handle(IpcChannels.runCancel, async (_evt, args: unknown) => {
-    const { runId } = z.object({ runId: z.string() }).parse(args);
-    return { ok: cancelRun(runId), runId };
+    // V1.36f — parse via the named RunCancelArgsSchema from
+    //  @shared/types (was previously inline `z.object({ runId:
+    //  z.string() })`); reply shape delegated to
+    //  helpers.formatRunCancelReply. Handler shrinks to 2 lines
+    //  of orchestration: parse, cancelRun, reply.
+    const { runId } = RunCancelArgsSchema.parse(args);
+    return formatRunCancelReply(cancelRun(runId), runId);
   });
 
   ipcMain.handle(IpcChannels.runStatus, async () => ({ active: listActiveRuns() }));
@@ -457,6 +464,7 @@ export {
   pickFormatExtension,
   formatGeometryReadReply,
   writeGeometryFile,
+  formatRunCancelReply,
 };
 
 export type { RunResult };
