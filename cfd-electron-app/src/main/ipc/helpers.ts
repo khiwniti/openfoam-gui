@@ -379,3 +379,62 @@ export type RunCancelReply = { ok: boolean; runId: string };
 export function formatRunCancelReply(canceled: boolean, runId: string): RunCancelReply {
   return { ok: canceled, runId };
 }
+
+// -------------------- V1.36g: runStart + runStatus reply shapers --------------------
+//
+// The run-lifecycle IPC handlers (runStart, runStatus) were the last
+// remaining inline-reply-literal pair in the V1.36* chain. V1.36g
+// lifts both reply shapes to named helpers:
+//   - formatRunStartReply({ runId, caseDir }) wraps the startRun
+//     return value + the input caseDir in the same
+//     `{ ok, message, runId, caseDir }` envelope the inline handler
+//     produced. Pairs with the existing RunStartEnvelopeSchema
+//     (V1.31a) and the RunResultSchema.parse wrap that the IPC
+//     handler still owns.
+//   - formatRunStatusReply(active) wraps the listActiveRuns return
+//     value in the `{ active }` envelope. Kept generic on the active
+//     element type so helpers.ts doesn't need a dependency on
+//     @main/openfoam/runner (the runner-free contract is preserved
+//     from V1.36a onwards).
+
+/** Reply the runStart IPC handler sends to the renderer (BEFORE
+ *  RunResultSchema.parse — the handler call site still wraps the
+ *  helper return in RunResultSchema.parse to enforce the wire-format
+ *  contract). The `message: 'run started'` literal is the user-facing
+ *  toast copy shown in the run panel; the `runId` is what the
+ *  renderer uses to subscribe to the run's log/phase/residual
+ *  streams. */
+/** Reply the runStart IPC handler sends to the renderer (BEFORE
+ *  RunResultSchema.parse — the handler call site still wraps the
+ *  helper return in RunResultSchema.parse to enforce the wire-format
+ *  contract). The `message: 'run started'` literal is the user-facing
+ *  toast copy shown in the run panel; the `runId` is what the
+ *  renderer uses to subscribe to the run's log/phase/residual
+ *  streams.
+ *
+ *  Note on the object-form argument: the runId + caseDir are both
+ *  strings with no semantic distinction at the call site, so a
+ *  2-arg form (`formatRunStartReply(runId, caseDir)`) would be
+ *  swap-bait — a caller could easily pass them in the wrong order
+ *  and silently produce a mis-routed reply. The named-key object
+ *  form forces explicit field naming at every call site. The
+ *  2-arg `formatRunCancelReply(canceled, runId)` is intentionally
+ *  NOT migrated to the same object form because the boolean-vs-
+ *  string type difference already prevents the swap. */
+export type RunStartReply = { ok: true; message: string; runId: string; caseDir: string };
+
+export function formatRunStartReply(args: { runId: string; caseDir: string }): RunStartReply {
+  return { ok: true, message: 'run started', runId: args.runId, caseDir: args.caseDir };
+}
+
+/** Reply the runStatus IPC handler sends to the renderer. Shape:
+ *  `{ active: T[] }` where `T` is the element type of whatever
+ *  `listActiveRuns()` from @main/openfoam/runner returns. Generic
+ *  on `T` so this helper module stays runner-free (no import
+ *  dependency on the openfoam runner); the IPC handler call site
+ *  is the type-narrowing boundary. */
+export type RunStatusReply<T> = { active: T[] };
+
+export function formatRunStatusReply<T>(active: T[]): RunStatusReply<T> {
+  return { active };
+}

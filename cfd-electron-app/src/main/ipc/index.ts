@@ -48,6 +48,11 @@ import {
   formatGeometryReadReply,
   writeGeometryFile,
   formatRunCancelReply,
+  // V1.36g — final run-lifecycle reply shaper pair (runStart +
+  //  runStatus). runStatus is generic on the active-run element
+  //  type so helpers.ts stays runner-free.
+  formatRunStartReply,
+  formatRunStatusReply,
 } from '@main/ipc/helpers';
 import { IpcChannels } from '@shared/types';
 import { dialog, shell } from 'electron';
@@ -270,7 +275,10 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
         },
         input.runId,
       );
-      return RunResultSchema.parse({ ok: true, message: 'run started', runId: id, caseDir: input.caseDir });
+      // V1.36g — reply literal lifted to helpers.formatRunStartReply;
+      //  RunResultSchema.parse then enforces the wire-format contract
+      //  without re-inlining the literal here.
+      return RunResultSchema.parse(formatRunStartReply({ runId: id, caseDir: input.caseDir }));
     },
   );
 
@@ -284,7 +292,10 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
     return formatRunCancelReply(cancelRun(runId), runId);
   });
 
-  ipcMain.handle(IpcChannels.runStatus, async () => ({ active: listActiveRuns() }));
+  // V1.36g — reply shaper lifted to helpers.formatRunStatusReply
+  //  (generic on the active-run element type so helpers.ts stays
+  //  runner-free; TS infers T from listActiveRuns() at the call site).
+  ipcMain.handle(IpcChannels.runStatus, async () => formatRunStatusReply(listActiveRuns()));
 
   ipcMain.handle(
     IpcChannels.resultsList,
@@ -465,6 +476,12 @@ export {
   formatGeometryReadReply,
   writeGeometryFile,
   formatRunCancelReply,
+  // V1.36g — final run-lifecycle reply shaper pair (runStart +
+  //  runStatus). Closes the V1.36* IPC handler-body coverage
+  //  chain: the only remaining un-lifted handler is openfoamDetect
+  //  (1-line pass-through, no lift value).
+  formatRunStartReply,
+  formatRunStatusReply,
 };
 
 export type { RunResult };
