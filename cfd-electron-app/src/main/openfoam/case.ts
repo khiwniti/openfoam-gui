@@ -24,10 +24,21 @@ import {
 //  lift preserves the public Handlebars surface
 //  ({{smootherLine solver}}, {{bcFor bcMap patchName}},
 //  {{refBlock refMap patchName}}) byte-for-byte.
+// V1.38b — extends case-helpers with 4 additional pure
+//  utilities: shouldEmitRelaxationFactors + shouldEmitAdaptiveTimeStep
+//  (the 2 precomputed booleans for the fvSolution +
+//  controlDict emit gates) + resolveTemplatesRoot (parameterized
+//  on env for testability) + buildRenderContext (the full
+//  Handlebars context object construction lifted from the
+//  inline literal in renderCase).
 import {
+  buildRenderContext,
   formatBcBlock,
   formatRefinementBlock,
   formatSmootherLine,
+  resolveTemplatesRoot,
+  shouldEmitAdaptiveTimeStep,
+  shouldEmitRelaxationFactors,
 } from './case-helpers';
 
 Handlebars.registerHelper('eq', (a: unknown, b: unknown) => a === b);
@@ -126,19 +137,6 @@ Handlebars.registerHelper('refBlock', function (refMap: unknown, patchName: unkn
   return new Handlebars.SafeString(formatRefinementBlock(refMap, patchName));
 });
 
-/**
- * Resolve the templates directory. In dev (electron-vite), resources live at
- * /<project>/resources. In production, they're bundled under process.resourcesPath/templates.
- */
-export function resolveTemplatesRoot(): string {
-  // electron-vite serves files relative to process.cwd() in dev
-  // and to process.resourcesPath in packaged builds.
-  if (process.env.NODE_ENV === 'development') {
-    return path.join(process.cwd(), 'resources', 'templates');
-  }
-  return path.join(process.resourcesPath || process.cwd(), 'templates');
-}
-
 interface TemplateEntry {
   out: string; // relative output path within caseDir
   src: string; // relative path to template under templatesRoot/<kind>/
@@ -195,34 +193,6 @@ export function buildTemplateLayout(domain: Domain, kind: CaseKind): TemplateEnt
   ];
 }
 
-/** Background-domain resolution string for snappyHexMeshDict (e.g. "30 20 20").
- *  V1.35a — exported as a named symbol so vitest can drive it
- *  directly without round-tripping through the full renderCase
- *  pipeline (which would need fs + cwd + NODE_ENV setup). The
- *  function itself is unchanged — only the visibility flag. */
-export function formatResolution(domain: Domain): string {
-  return `${domain.nx} ${domain.ny} ${domain.nz}`;
-}
-
-/** A point guaranteed to live inside the background blockMesh, used by
- *  snappy as the seed point for casting the surface. Falls back to the
- *  parametric domain center if the imported bbox is missing.
- *  V1.35a — exported for unit testing (see `formatResolution` above
- *  for the testability rationale). */
-export function formatLocationInMesh(domain: Domain): string {
-  const fmtNum = (n: number) => {
-    if (!Number.isFinite(n)) return "0";
-    // Keep it short — snappy will accept decimals, this is just a seed.
-    return Number.parseFloat(n.toFixed(6)).toString();
-  };
-  if (domain.bbox) {
-    // Slightly offset from the bbox corner toward the centroid — guaranteed to be inside
-    // a background mesh whose Lx/Ly/Lz were sized to fully contain it.
-    return `${fmtNum((domain.bbox.min.x + domain.bbox.max.x) / 2)} ${fmtNum((domain.bbox.min.y + domain.bbox.max.y) / 2)} ${fmtNum((domain.bbox.min.z + domain.bbox.max.z) / 2)}`;
-  }
-  return `${fmtNum(domain.Lx / 2)} ${fmtNum(domain.Ly / 2)} ${fmtNum(domain.Lz / 2)}`;
-}
-
 export interface RenderedCase {
   caseDir: string;
   files: string[];
@@ -247,58 +217,21 @@ export async function renderCase(
     ),
   );
 
-  const context = {
-    ...domain,
+  // V1.38b — context object construction lifted to
+  //  @main/openfoam/case-helpers.buildRenderContext. The helper
+  //  delegates the 2 emit booleans to shouldEmitRelaxationFactors
+  //  + shouldEmitAdaptiveTimeStep and the per-template
+  //  precomputed strings to formatResolution +
+  //  formatLocationInMesh (already exported from V1.35a). The
+  //  buildRenderContext return is structurally identical to the
+  //  inline literal it replaced (same keys, same values, same
+  //  ordering modulo JS object literal enumeration rules).
+  const context = buildRenderContext({
+    domain,
     bc,
-    // V1.4 — per-patch snappy refinement levels, consumed by the
-    // refinementSurfaces block in snappyHexMeshDict.hbs. Kept as a separate
-    // top-level key (instead of being merged into domain.patches) so the
-    // Domain schema stays unchanged.
-    patchRefinements: refinements ?? {},
+    refinements: refinements ?? {},
     caseLabel: caseLabel ?? kind,
-    openfoamVersion: '(detected at run)',
-    resolution: formatResolution(domain),
-    locationInMesh: formatLocationInMesh(domain),
-    // Origin strings so blockMeshDict.hbs can place vertices at (origin.x, origin.y, origin.z)
-    // instead of hard-coded (0,0,0). Keeps parametric cavity flows unchanged (origin === 0).
-    origin: domain.origin,
-    ox: String(domain.origin?.x ?? 0),
-    oy: String(domain.origin?.y ?? 0),
-    oz: String(domain.origin?.z ?? 0),
-    oxPLx: String((domain.origin?.x ?? 0) + domain.Lx),
-    oyPLy: String((domain.origin?.y ?? 0) + domain.Ly),
-    ozPLz: String((domain.origin?.z ?? 0) + domain.Lz),
-    // V1.18b — precomputed `emitRelaxationFactors` boolean for fvSolution.
-    //  SIMPLE-family solvers (simpleFoam, buoyantSimpleFoam, potentialFoam)
-    //  emit the block unconditionally per V1.11 review-fix; pimpleFoam
-    //  emits only when `relaxationFactors.enabled === true` (off by default
-    //  for PIMPLE per the V1.18b designer recommendation). Pre-computing
-    //  here avoids needing a Handlebars `and` helper in the template.
-    //
-    //  V1.18b review-fix — `domain.relaxationFactors` is now part of
-    //  DomainSchema (added alongside V1.18d's `solverConfigs`) so the
-    //  optional-chaining read drops to a direct property access. Pre-
-    //  V1.18b cases parse with `enabled: false` via Zod defaults and the
-    //  boolean resolves to V1.11 behavior (PIMPLE never emits).
-    emitRelaxationFactors:
-      domain.solver === "simpleFoam" ||
-      domain.solver === "buoyantSimpleFoam" ||
-      domain.solver === "potentialFoam" ||
-      (domain.solver === "pimpleFoam" && domain.relaxationFactors.enabled),
-    // V1.19 — precomputed boolean used by controlDict.hbs to gate
-    //  the `adjustTimeStep yes;` block. SIMPLE-family solvers
-    //  (simpleFoam, buoyantSimpleFoam, potentialFoam) ignore the
-    //  field entirely in OpenFOAM, so we hard-route them to `no`
-    //  regardless of the form's displayed toggle (the values
-    //  still roundtrip through .cfd-app-state.json for renderer
-    //  state consistency, but the emitted controlDict is always
-    //  OpenFOAM stock). pimpleFoam + icoFoam honor the toggle
-    //  directly: emitting `yes; maxCo X;` when enabled, `no;`
-    //  otherwise.
-    emitAdaptiveTimeStep:
-      ((domain.solver === "pimpleFoam" || domain.solver === "icoFoam") &&
-        domain.adaptiveTimeStep.enabled),
-  };
+  });
 
   const written: string[] = [];
   for (const tpl of entries) {
@@ -399,3 +332,27 @@ export async function saveCase(
 ) {
   return renderCase(kind, domain, bc, targetDir, caseLabel, refinements);
 }
+
+// V1.38b — re-export the lifted helpers from
+//  @main/openfoam/case-helpers for backward compat. The 5
+//  pure utilities preserve their pre-V1.38b public surface
+//  so any external caller (e.g., the IPC barrel in
+//  src/main/ipc/index.ts, the renderer-side test fixtures)
+//  keeps importing from '@main/openfoam/case' without churn:
+//    * formatResolution + formatLocationInMesh -- V1.35a
+//      exports that V1.38b re-homed into case-helpers
+//      (without these re-exports, downstream code that did
+//      `import { formatResolution } from './case'` would
+//      break).
+//    * shouldEmitRelaxationFactors + shouldEmitAdaptiveTimeStep
+//      + resolveTemplatesRoot -- V1.38b lifts re-exported for
+//      the same backward-compat reason.
+//  buildRenderContext is consumed internally by renderCase and
+//  doesn't have a legacy public name to preserve.
+export {
+  formatLocationInMesh,
+  formatResolution,
+  resolveTemplatesRoot,
+  shouldEmitAdaptiveTimeStep,
+  shouldEmitRelaxationFactors,
+} from './case-helpers';

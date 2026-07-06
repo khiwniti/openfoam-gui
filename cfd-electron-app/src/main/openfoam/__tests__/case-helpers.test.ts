@@ -17,11 +17,88 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  buildRenderContext,
   formatBcBlock,
   formatRefinementBlock,
   formatSmootherLine,
+  resolveTemplatesRoot,
+  shouldEmitAdaptiveTimeStep,
+  shouldEmitRelaxationFactors,
 } from '../case-helpers';
-import type { BcField, PatchRefinements } from '@shared/types';
+import type { BcField, Domain, PatchRefinements } from '@shared/types';
+
+/**
+ * Build a minimal valid Domain for the V1.38b context-builder
+ * tests. Mirrors the OpenFOAM-cavity defaults from the
+ * SOLVER_CONTROLS_DEFAULTS map in the renderer's Zustand
+ * store; specific tests override individual fields to exercise
+ * the per-solver routing of shouldEmitRelaxationFactors +
+ * shouldEmitAdaptiveTimeStep and the snappy-driven `origin` /
+ * `bbox` branches of buildRenderContext.
+ */
+function makeTestDomain(overrides: Partial<Domain> = {}): Domain {
+  return {
+    kind: 'cavity',
+    Lx: 1,
+    Ly: 1,
+    Lz: 1,
+    nx: 20,
+    ny: 20,
+    nz: 20,
+    nu: 1e-5,
+    rho: 1.2,
+    solver: 'icoFoam',
+    turbulence: 'laminar',
+    endTime: 1,
+    deltaT: 0.001,
+    writeInterval: 100,
+    purgeWrite: 0,
+    numerics: {
+      enabled: true,
+      nNonOrthogonalCorrectors: 0,
+      nCorrectors: 2,
+      nOuterCorrectors: 1,
+      residualControl: 1e-4,
+      residualControlByField: {},
+    },
+    schemes: {
+      ddtDefault: 'Euler',
+      gradDefault: 'Gauss linear',
+      divDefault: 'none',
+      laplacianDefault: 'Gauss linear corrected',
+      interpolationDefault: 'linear',
+      snGradDefault: 'corrected',
+      fieldDivs: {},
+      fieldLaplacians: {},
+      fieldSnGrads: {},
+    },
+    solverConfigs: {
+      p: { solver: 'GAMG', tolerance: 1e-7, relTol: 0.01 },
+      U: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 },
+      turbulence: { solver: 'smoothSolver', tolerance: 1e-7, relTol: 0.1 },
+    },
+    relaxationFactors: { enabled: false, fields: {}, equations: {} },
+    adaptiveTimeStep: { enabled: false, maxCo: 1 },
+    turbulenceCoefficients: { Cmu: 0.09, C1: 1.44, C2: 1.92, sigmak: 1.0, sigmaEps: 1.3 },
+    turbulenceCoefficientsKOmegaSST: {
+      alphaK1: 0.85, alphaK2: 1.0, alphaOmega1: 0.5, alphaOmega2: 0.856,
+      beta1: 0.075, beta2: 0.0828, betaStar: 0.09, C1: 2.0,
+      gamma1: 0.5555555555, gamma2: 0.875, sigmaK: 0.6, sigmaOmega: 0.5,
+    },
+    turbulenceCoefficientsSpalartAllmaras: {
+      sigmaNut: 0.667, kappa: 0.41, Cb1: 0.1355, Cb2: 0.622,
+      Cw1: 0.3, Cw2: 0.06, Cw3: 2.0, Cv1: 7.1, Cv2: 5.0,
+    },
+    turbulenceCoefficientsLES: { Cs: 0.2, Cw: 0.325 },
+    turbulenceCoefficientsKEqn: { Ck: 0.094, Ce1: 1.048, Ce2: 1.048 },
+    turbulenceCoefficientsCDES: { CDES: 0.65 },
+    initialConditions: { velocity: { x: 0, y: 0, z: 0 }, pressure: 0 },
+    cores: 1,
+    geometryKind: 'parametric',
+    patches: [],
+    ...overrides,
+  };
+}
 
 describe('formatSmootherLine', () => {
   it("returns the GAMG / GaussSeidel line for solver='GAMG'", () => {
@@ -192,5 +269,245 @@ describe('formatRefinementBlock', () => {
     const refMap: PatchRefinements = { wall: { min: 2, max: 3 } };
     expect(formatRefinementBlock(refMap, undefined)).toBe('level (0 0);');
     expect(formatRefinementBlock(refMap, 42)).toBe('level (0 0);');
+  });
+});
+
+describe('shouldEmitRelaxationFactors', () => {
+  it("emits the relaxationFactors block unconditionally for SIMPLE-family solvers", () => {
+    // simpleFoam, buoyantSimpleFoam, potentialFoam all bypass
+    //  the `enabled` flag per V1.18b (V1.11 review-fix): SIMPLE
+    //  algorithms need the relaxation factors to converge,
+    //  regardless of the user's toggle preference.
+    expect(shouldEmitRelaxationFactors(makeTestDomain({ solver: 'simpleFoam' }))).toBe(true);
+    expect(shouldEmitRelaxationFactors(makeTestDomain({ solver: 'buoyantSimpleFoam' }))).toBe(true);
+    expect(shouldEmitRelaxationFactors(makeTestDomain({ solver: 'potentialFoam' }))).toBe(true);
+  });
+
+  it("emits the relaxationFactors block for icoFoam regardless of the enabled flag (V1.18b design)", () => {
+    // icoFoam is transient (PISO), and per V1.18b the
+    //  `enabled` flag only gates pimpleFoam. icoFoam
+    //  unconditionally honors the toggle (V1.11 default = no
+    //  block). Pin this so a future "extend the gate to icoFoam"
+    //  refactor gets caught.
+    expect(shouldEmitRelaxationFactors(makeTestDomain({ solver: 'icoFoam' }))).toBe(false);
+  });
+
+  it("emits the relaxationFactors block for pimpleFoam only when `relaxationFactors.enabled === true`", () => {
+    // Default relaxationFactors.enabled is false (Zod default),
+    //  so a stock pimpleFoam domain emits no block. Flipping
+    //  enabled to true via the form changes the emit.
+    expect(shouldEmitRelaxationFactors(makeTestDomain({ solver: 'pimpleFoam' }))).toBe(false);
+    expect(shouldEmitRelaxationFactors(makeTestDomain({
+      solver: 'pimpleFoam',
+      relaxationFactors: { enabled: true, fields: {}, equations: {} },
+    }))).toBe(true);
+  });
+});
+
+describe('shouldEmitAdaptiveTimeStep', () => {
+  it("never emits `adjustTimeStep yes;` for SIMPLE-family solvers regardless of the enabled flag", () => {
+    // SIMPLE is steady-state; OpenFOAM ignores adjustTimeStep on
+    //  these solvers. The form displays the toggle but the
+    //  emitted controlDict always reads `no` (OpenFOAM stock).
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({ solver: 'simpleFoam' }))).toBe(false);
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({ solver: 'buoyantSimpleFoam' }))).toBe(false);
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({ solver: 'potentialFoam' }))).toBe(false);
+    // Even with enabled=true, the SIMPLE gate short-circuits to false.
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({
+      solver: 'simpleFoam',
+      adaptiveTimeStep: { enabled: true, maxCo: 0.5 },
+    }))).toBe(false);
+  });
+
+  it("honors the enabled flag for transient solvers (pimpleFoam + icoFoam)", () => {
+    // Default adaptiveTimeStep.enabled is false; a stock
+    //  transient domain emits `adjustTimeStep no;`.
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({ solver: 'pimpleFoam' }))).toBe(false);
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({ solver: 'icoFoam' }))).toBe(false);
+    // Flipping enabled to true changes the emit.
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({
+      solver: 'pimpleFoam',
+      adaptiveTimeStep: { enabled: true, maxCo: 0.5 },
+    }))).toBe(true);
+    expect(shouldEmitAdaptiveTimeStep(makeTestDomain({
+      solver: 'icoFoam',
+      adaptiveTimeStep: { enabled: true, maxCo: 1 },
+    }))).toBe(true);
+  });
+});
+
+describe('resolveTemplatesRoot', () => {
+  it("returns `<cwd>/resources/templates` when nodeEnv === 'development'", () => {
+    // In dev (electron-vite), templates live alongside the
+    //  project root's `resources/` directory. The exact path
+    //  is `path.join(cwd, 'resources', 'templates')`.
+    expect(resolveTemplatesRoot({
+      nodeEnv: 'development',
+      cwd: '/home/user/project',
+      resourcesPath: '/should/be/ignored',
+    })).toBe('/home/user/project/resources/templates');
+  });
+
+  it("returns `<resourcesPath>/templates` in production when resourcesPath is set", () => {
+    // electron-vite packages bundle resources under
+    //  process.resourcesPath; the templates sit one level
+    //  deep at `<resourcesPath>/templates`.
+    expect(resolveTemplatesRoot({
+      nodeEnv: 'production',
+      cwd: '/should/be/ignored',
+      resourcesPath: '/app.asar.unpacked',
+    })).toBe('/app.asar.unpacked/templates');
+  });
+
+  it("falls back to `<cwd>/templates` in production when resourcesPath is undefined", () => {
+    // The legacy `process.resourcesPath || process.cwd()`
+    //  pattern: if process.resourcesPath is undefined (e.g.,
+    //  a misconfigured packaged build or a test env), fall
+    //  through to cwd-relative templates.
+    expect(resolveTemplatesRoot({
+      nodeEnv: 'production',
+      cwd: '/home/user/project',
+      resourcesPath: undefined,
+    })).toBe('/home/user/project/templates');
+  });
+});
+
+describe('buildRenderContext', () => {
+  it("builds a cavity context with the per-template precomputed strings + origin defaults", () => {
+    // A stock cavity domain (no origin, no bbox, solver=icoFoam)
+    //  gets resolution="20 20 20" (from nx/ny/nz), the
+    //  bbox-less locationInMesh fallback at (0.5, 0.5, 0.5)
+    //  (from Lx/Ly/Lz / 2), origin/ox/oy/oz all "0", and the
+    //  2 emit booleans reflecting icoFoam's transient routing
+    //  (relaxationFactors=false, adaptiveTimeStep=false).
+    const domain = makeTestDomain({ solver: 'icoFoam' });
+    const bc = { velocity: {}, pressure: {} };
+    const ctx = buildRenderContext({
+      domain,
+      bc,
+      refinements: {},
+      caseLabel: 'cavity-test',
+    });
+    expect(ctx.resolution).toBe('20 20 20');
+    expect(ctx.locationInMesh).toBe('0.5 0.5 0.5');
+    expect(ctx.caseLabel).toBe('cavity-test');
+    expect(ctx.openfoamVersion).toBe('(detected at run)');
+    expect(ctx.patchRefinements).toEqual({});
+    expect(ctx.bc).toBe(bc);
+    // Domain spread — the template's `{{Lx}}` etc. resolve
+    //  directly to the domain field values.
+    expect(ctx.Lx).toBe(1);
+    expect(ctx.nu).toBe(1e-5);
+    expect(ctx.solver).toBe('icoFoam');
+    expect(ctx.turbulence).toBe('laminar');
+    // Origin defaults to undefined (no origin key on Domain) so
+    //  the `ox`/`oy`/`oz` strings read "0" (the ?? 0 fallthrough).
+    expect(ctx.origin).toBeUndefined();
+    expect(ctx.ox).toBe('0');
+    expect(ctx.oy).toBe('0');
+    expect(ctx.oz).toBe('0');
+    expect(ctx.oxPLx).toBe('1');
+    expect(ctx.oyPLy).toBe('1');
+    expect(ctx.ozPLz).toBe('1');
+    // icoFoam routing — no relaxationFactors block, no
+    //  adaptiveTimeStep block (default enabled=false).
+    expect(ctx.emitRelaxationFactors).toBe(false);
+    expect(ctx.emitAdaptiveTimeStep).toBe(false);
+  });
+
+  it("uses bbox centroid for locationInMesh when the domain has a bbox", () => {
+    // The snappy-driven (imported) flow uses the bbox centroid
+    //  + 1/2 the Lx/Ly/Lz offset as the seed for the
+    //  blockMesh. The numbers here are the bbox-center + 0.5
+    //  for a 1x1x1 cavity — exact match to the inline
+    //  formatLocationInMesh logic.
+    const domain = makeTestDomain({
+      bbox: {
+        min: { x: -0.5, y: -0.5, z: -0.5 },
+        max: { x: 0.5, y: 0.5, z: 0.5 },
+      },
+    });
+    const ctx = buildRenderContext({
+      domain,
+      bc: { velocity: {}, pressure: {} },
+      refinements: {},
+      caseLabel: 'snappy-test',
+    });
+    expect(ctx.locationInMesh).toBe('0 0 0');
+  });
+
+  it("propagates a custom origin to the 6 origin-coordinate strings", () => {
+    // The blockMesh origin (corner offset from the world
+    //  origin) is on the domain; the context exposes both
+    //  the raw `origin` object (for the template to read
+    //  `{{origin.x}}`) and 6 precomputed string forms (ox,
+    //  oy, oz, oxPLx, oyPLy, ozPLz) for direct emission in
+    //  the .hbs file.
+    const domain = makeTestDomain({
+      origin: { x: 10, y: 20, z: 30 },
+      Lx: 2, Ly: 3, Lz: 4,
+    });
+    const ctx = buildRenderContext({
+      domain,
+      bc: { velocity: {}, pressure: {} },
+      refinements: {},
+      caseLabel: 'offset-test',
+    });
+    expect(ctx.origin).toEqual({ x: 10, y: 20, z: 30 });
+    expect(ctx.ox).toBe('10');
+    expect(ctx.oy).toBe('20');
+    expect(ctx.oz).toBe('30');
+    expect(ctx.oxPLx).toBe('12');
+    expect(ctx.oyPLy).toBe('23');
+    expect(ctx.ozPLz).toBe('34');
+  });
+
+  it("routes pimpleFoam + relaxationFactors.enabled=true to emitRelaxationFactors=true", () => {
+    // pimpleFoam gates the relaxationFactors block on the
+    //  per-solver toggle. Default false → no emit. Flip to
+    //  true → emit. This pins the routing without coupling
+    //  the test to the shouldEmitRelaxationFactors helper's
+    //  internal logic.
+    const ctx = buildRenderContext({
+      domain: makeTestDomain({ solver: 'pimpleFoam' }),
+      bc: { velocity: {}, pressure: {} },
+      refinements: {},
+      caseLabel: 'pimple-default',
+    });
+    expect(ctx.emitRelaxationFactors).toBe(false);
+
+    const ctxEnabled = buildRenderContext({
+      domain: makeTestDomain({
+        solver: 'pimpleFoam',
+        relaxationFactors: { enabled: true, fields: {}, equations: {} },
+      }),
+      bc: { velocity: {}, pressure: {} },
+      refinements: {},
+      caseLabel: 'pimple-enabled',
+    });
+    expect(ctxEnabled.emitRelaxationFactors).toBe(true);
+  });
+
+  it("routes icoFoam + adaptiveTimeStep.enabled=true to emitAdaptiveTimeStep=true", () => {
+    // icoFoam honors the enabled flag (transient solver).
+    //  Default false → no emit. Flip to true → emit.
+    const ctx = buildRenderContext({
+      domain: makeTestDomain({ solver: 'icoFoam' }),
+      bc: { velocity: {}, pressure: {} },
+      refinements: {},
+      caseLabel: 'ico-default',
+    });
+    expect(ctx.emitAdaptiveTimeStep).toBe(false);
+
+    const ctxEnabled = buildRenderContext({
+      domain: makeTestDomain({
+        solver: 'icoFoam',
+        adaptiveTimeStep: { enabled: true, maxCo: 0.5 },
+      }),
+      bc: { velocity: {}, pressure: {} },
+      refinements: {},
+      caseLabel: 'ico-enabled',
+    });
+    expect(ctxEnabled.emitAdaptiveTimeStep).toBe(true);
   });
 });
