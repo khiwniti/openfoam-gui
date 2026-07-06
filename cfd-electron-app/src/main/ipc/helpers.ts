@@ -16,7 +16,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { loadCaseState } from '@main/openfoam/case';
-import type { CaseKind } from '@shared/types';
+import { AppSettingsSchema, type CaseKind, type AppSettings } from '@shared/types';
 
 export type CaseListing = { dir: string; name: string; kind: CaseKind; mtime: number };
 export type OpenPathReply = { ok: boolean; opened: string; error?: string };
@@ -107,4 +107,45 @@ export async function listCasesAt(root: string): Promise<CaseListing[]> {
   } catch {
     return [];
   }
+}
+
+/** Read + parse the persisted settings JSON at `settingsPath`. Returns the
+ *  parsed `AppSettings` on success. On any failure (missing file,
+ *  malformed JSON, Zod-invalid schema, fs error) returns the SAME
+ *  `AppSettingsSchema.parse({})` shape — i.e., a fresh empty Settings
+ *  object — matching the inline `catch` block in the openfoamSettingsLoad
+ *  IPC handler whose purpose is "first call returns a sensible default".
+ *
+ *  Pure transformation: parameterized on `settingsPath` so vitest can drive
+ *  a real tmpdir without touching `process.env.HOME`.
+ *
+ *  Note: the IPC handler also maintains a module-level `cachedSettings`
+ *  memo to avoid re-reading on every IPC call. That cache stays in the
+ *  barrel; this helper is the deterministic pure read-side of the
+ *  operation. The handler composes helper + cache. */
+export async function readSettingsFromDisk(settingsPath: string): Promise<AppSettings> {
+  try {
+    const raw = await fs.readFile(settingsPath, 'utf8');
+    return AppSettingsSchema.parse(JSON.parse(raw));
+  } catch {
+    return AppSettingsSchema.parse({});
+  }
+}
+
+/** Write the supplied `AppSettings` as pretty-printed JSON (2-space
+ *  indent) at `settingsPath`. Creates the parent directory tree if
+ *  missing (mirrors the `mkdir -p` semantics an electron app expects
+ *  on first save in a fresh home). No throw on permission/parent issues:
+ *  any error propagates to the caller (the IPC handler wraps in
+ *  `{ ok: false, error }` if a future V.x wants a softer contract).
+ *
+ *  Returns the resolved `settingsPath` so callers logging "saved to X"
+ *  don't need to recompute. */
+export async function writeSettingsToDisk(
+  settingsPath: string,
+  settings: AppSettings,
+): Promise<string> {
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+  return settingsPath;
 }

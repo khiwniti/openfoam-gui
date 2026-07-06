@@ -25,6 +25,8 @@ import {
   parseResultFields,
   listCasesAt,
   formatOpenPathReply,
+  readSettingsFromDisk,
+  writeSettingsToDisk,
 } from '@main/ipc/helpers';
 import { IpcChannels } from '@shared/types';
 import { dialog, shell } from 'electron';
@@ -99,8 +101,7 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
     IpcChannels.openfoamSettingsSave,
     async (_evt, args: unknown) => {
       const parsed = AppSettingsSchema.parse(args);
-      const cfgPath = settingsPath();
-      await fs.writeFile(cfgPath, JSON.stringify(parsed, null, 2), 'utf8');
+      const cfgPath = await writeSettingsToDisk(settingsPath(), parsed);
       // Invalidate the in-process cache so the next getRunRoot() / settings read
       // picks up the freshly-saved values (otherwise the renderer could Save,
       // then immediately refresh cases and they'd land in the OLD root).
@@ -110,12 +111,7 @@ export function registerIpc(mainWindowGetter: () => Electron.BrowserWindow | nul
   );
 
   ipcMain.handle(IpcChannels.openfoamSettingsLoad, async () => {
-    try {
-      const raw = await fs.readFile(settingsPath(), 'utf8');
-      return AppSettingsSchema.parse(JSON.parse(raw));
-    } catch {
-      return AppSettingsSchema.parse({});
-    }
+    return readSettingsFromDisk(settingsPath());
   });
 
   ipcMain.handle(
@@ -391,6 +387,8 @@ export {
   parseResultFields,
   listCasesAt,
   formatOpenPathReply,
+  readSettingsFromDisk,
+  writeSettingsToDisk,
 };
 
 export type { RunResult };
