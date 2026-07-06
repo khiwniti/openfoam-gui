@@ -25,6 +25,16 @@ import {
   formatDuration,
   type RunStage,
 } from './runner-helpers';
+// V1.37b — residual parser + convergence checker extracted from
+//  this file into @main/openfoam/runner-parsers (continues the
+//  V1.37* lift chain). The factories are imported into local scope
+//  so runStage can call them directly; the re-export at the bottom
+//  preserves backward compat for any future caller that wants to
+//  instantiate a parser via '@main/openfoam/runner'.
+import {
+  makeResidualParser,
+  makeConvergenceChecker,
+} from './runner-parsers';
 
 export interface RunOptions {
   bashrc: string;
@@ -318,169 +328,10 @@ export function listActiveRuns() {
   }));
 }
 
-// ----- Residual parser -----
-// OpenFOAM logs lines like:
-//   Time = 1
-//   smoothSolver:  Solving for Ux, Initial residual = 1e-5, Final residual = 1e-7, No Iterations 4
-//   DICPCG:  Solving for p, Initial residual = 0.001, Final residual = 5e-4, No Iterations 12
-function makeResidualParser(
-  onResidual?: (point: ResidualPoint & { runId: string }) => void,
-  runId: string = 'unknown',
-  /** V1.8 — fired once per "Time = N" line, with the same
-   *  ResidualPoint the residual broadcaster receives. Lets the
-   *  convergence detector hook in without re-parsing the log line
-   *  itself; both `onResidual` and `onTimeReached` fire on each
-   *  Time boundary. */
-  onTimeReached?: (point: ResidualPoint & { runId: string }) => void,
-) {
-  let lastTime = NaN;
-  const fieldsAtTime: Record<string, number> = {};
-  const timeRe = /^\s*Time\s*=\s*([0-9.eE+-]+)/;
-  const residualRe = /Solving for ([A-Za-z0-9_]+),.*Initial residual\s*=\s*([0-9.eE+-]+)/;
-
-  function emit() {
-    if (Number.isNaN(lastTime)) return;
-    const point: ResidualPoint & { runId: string } = {
-      time: lastTime,
-      fields: { ...fieldsAtTime },
-      runId,
-    };
-    if (onResidual) onResidual(point);
-    if (onTimeReached) onTimeReached(point);
-  }
-
-  function consume(line: string) {
-    if (!onResidual) return;
-    const tm = timeRe.exec(line);
-    if (tm) {
-      emit();
-      lastTime = parseFloat(tm[1]);
-      for (const k of Object.keys(fieldsAtTime)) delete fieldsAtTime[k];
-      return;
-    }
-    const rm = residualRe.exec(line);
-    if (rm) {
-      const f = rm[1];
-      const v = parseFloat(rm[2]);
-      if (Number.isFinite(v)) fieldsAtTime[f] = v;
-    }
-  }
-  return { consume, flush: emit };
-}
-
-// V1.8 — Convergence auto-detection.
-//
-// OpenFOAM emits lines like:
-//   Time = 1
-//   smoothSolver:  Solving for Ux, Initial residual = 1e-5, ...
-//   DICPCG:        Solving for p,  Initial residual = 0.001, ...
-// The residual parser already buffers fields per Time line and emits
-// one ResidualPoint on each Time boundary; makeConvergenceChecker
-// hooks `consume(point)` into that flow via `onTimeReached`.
-//
-// Criterion (per V1.8 thinker verdict #3 + #5):
-//   • Watch the longest-running per-field "below-threshold streak"
-//     across all observed fields.
-//   • Fire onConverge once the streak reaches `stableIterations`
-//     AND we've seen at least that many distinct timesteps (avoids
-//     a single quiet step satisfying the criterion trivially).
-//   • Auto-stop is opt-in via `autoStop`, and routes through
-//     `cancelRun(run.id, "converged")` so `executeRun` emits
-//     'converged' as the terminal phase instead of 'cancelled'.
-//   • Detector is sticky: `fired` is latched on first hit so a 2nd
-//     detect within the same run doesn't double-emit 'converged'.
-function makeConvergenceChecker(opts: {
-  threshold: number;
-  stableIterations: number;
-  enabled: boolean;
-  autoStop: boolean;
-  onPhase: (phase: Phase, message: string | undefined) => void;
-  /** Cancels the active run with reason='converged', so the
-   *  executive loop terminates with the right phase. */
-  stop: () => void;
-}) {
-  let totalSamples = 0;
-  let fired = false;
-  let lastTime = NaN;
-  const below: Record<string, number> = {};
-  /**
-   * V1.8 review-fix #2 — fields seen in any prior sample. Any field
-   * in `seenFields` that is ABSENT from the current sample is treated
-   * as "unknown" and has its streak reset to 0; otherwise a field
-   * that the solver stopped emitting (e.g. a turbulence model
-   * restart, a phase where the field is irrelevant, or a solver
-   * that doesn't report the field for a transient iteration) would
-   * keep its prior streak value and could falsely satisfy
-   * `stableIterations`.
-   */
-  const seenFields = new Set<string>();
-  return {
-    consume(point: ResidualPoint) {
-      if (fired || !opts.enabled) return;
-      lastTime = point.time;
-      if (totalSamples === 0) {
-        // First sample: seed the field-counter map at 0 (intentional;
-        // cannot trigger from a single quiet step). Track every
-        // field so future samples can detect their absence.
-        totalSamples = 1;
-        for (const k of Object.keys(point.fields)) {
-          below[k] = 0;
-          seenFields.add(k);
-        }
-        return;
-      }
-      const presentKeys = Object.keys(point.fields);
-      const presentSet = new Set(presentKeys);
-      // Update streaks for every present field; brand-new fields
-      // default to 0 so they need a below-threshold observation to
-      // start counting.
-      for (const k of presentKeys) {
-        seenFields.add(k);
-        const v = point.fields[k];
-        if (Number.isFinite(v) && v < opts.threshold) {
-          below[k] = (below[k] ?? 0) + 1;
-        } else {
-          below[k] = 0;
-        }
-      }
-      // V1.8 review-fix #2 — reset streaks for any field we've
-      //  previously observed but that DROPPED OUT of this sample.
-      // Without this, a solver that stops emitting `k` for a while
-      // would leave `below.k` stuck at its prior value and could
-      // falsely satisfy `stableIterations` once the streak count
-      // landed on the right number.
-      for (const k of seenFields) {
-        if (!presentSet.has(k)) below[k] = 0;
-      }
-      totalSamples += 1;
-      let longestStreak = 0;
-      for (const s of Object.values(below)) {
-        if (s > longestStreak) longestStreak = s;
-      }
-      if (
-        totalSamples >= opts.stableIterations &&
-        longestStreak >= opts.stableIterations
-      ) {
-        fired = true;
-        if (opts.autoStop) {
-          // V1.8 review-fix #3 — when auto-stopping, the executive
-          //  `emitTerminal` in executeRun owns the final phase emit
-          //  (it carries "during $stage" context). The monitor's
-          //  informational `onPhase` is suppressed here to avoid
-          //  back-to-back `'converged'` emissions that the IPC
-          //  phase broadcaster throttle coalesces but that show as
-          //  two emit calls in process logs / debug traces.
-          opts.stop();
-        } else {
-          opts.onPhase(
-            "converged",
-            `Solver converged at t=${lastTime.toFixed(2)}`,
-          );
-        }
-      }
-    },
-  };
-}
+// V1.37b — makeResidualParser + makeConvergenceChecker were lifted
+//  to @main/openfoam/runner-parsers. See the import at the top +
+//  the re-export at the bottom of this file. The implementations +
+//  JSDocs live in the new module.
 
 // V1.37a — formatDuration / ensureDir / defaultRunRoot were lifted
 //  to @main/openfoam/runner-helpers. See the import at the top +
@@ -499,3 +350,13 @@ export {
   formatDuration,
   type RunStage,
 } from './runner-helpers';
+
+// V1.37b — re-export the residual parser + convergence checker
+//  factories from @main/openfoam/runner-parsers for backward
+//  compat. The runner's `runStage` instantiates them internally;
+//  any external caller (e.g. a future renderer-side parser for
+//  offline log replay) can now import them from either path.
+export {
+  makeResidualParser,
+  makeConvergenceChecker,
+} from './runner-parsers';
