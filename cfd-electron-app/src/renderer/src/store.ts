@@ -367,7 +367,7 @@ function makeSolverControlsDefaults(): SolverControlsBySolver {
     // V1.9 — PISO uses nCorrectors (no outer loop). 2 correctors is the
     // canonical OpenFOAM lid-driven-cavity starter; raising to 3-4
     // helps when the mesh has non-orthogonal cells.
-    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: '1e-4', residualControlByField: {} },
     // V1.11 — PISO solver; OpenFOAM doesn't emit a relaxationFactors
     //  block for PISO by default (momentum_predictor is on, but no
     //  under-relaxation). Empty maps let the template fall through to
@@ -502,7 +502,7 @@ function makeSolverControlsDefaults(): SolverControlsBySolver {
     //  tolerance. residualControl drives the per-field target values in
     //  fvSolution's residualControl block (1e-4 is the OpenFOAM built-in
     //  default and matches the V1.8-era hard-coded template).
-    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: '1e-4', residualControlByField: {} },
     // V1.11 — SIMPLE solver. OpenFOAM built-in defaults (p=0.3, U=0.7)
     //  are baked into the template fallback so empty overrides render
     //  identically; the user can dial p tighter or relaxer via the
@@ -624,7 +624,7 @@ function makeSolverControlsDefaults(): SolverControlsBySolver {
     //  to 2 here so a fresh build of a pimpleFoam case doesn't have
     //  to remember to dial it up. The user can still override per-
     //  solver via the Build Case form.
-    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 2, residualControl: 1e-4, residualControlByField: {} },
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 2, residualControl: '1e-4', residualControlByField: {} },
     // V1.11 — PIMPLE solver. OpenFOAM PIMPLE can opt into
     //  relaxationFactors (typically when nOuterCorrectors>1), but the
     //  V1.10-era template didn't emit a block. Empty here preserves
@@ -704,7 +704,7 @@ function makeSolverControlsDefaults(): SolverControlsBySolver {
     //  residualControl tolerance is irrelevant (the algorithm doesn't
     //  emit a SIMPLE-style residualControl block) so the value is just
     //  carried verbatim for symmetry with the other solvers' shape.
-    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: '1e-4', residualControlByField: {} },
     // V1.11 — potentialFoam runs PISO-style correctors on a SIMPLE-like
     //  outer sweep; OpenFOAM's built-in defaults for the SIMPLE shape
     //  apply here (p=0.3, U=0.7). Empty overrides render identically.
@@ -823,7 +823,7 @@ function makeSolverControlsDefaults(): SolverControlsBySolver {
     //  matches simpleFoam; the same tolerance applies to the energy
     //  field (T) implied by buoyantSimpleFoam, even though the user's
     //  template only emits p/U/(k|epsilon|omega|nuTilda) keys today.
-    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: 1e-4, residualControlByField: {} },
+    numerics: { enabled: true, nNonOrthogonalCorrectors: 0, nCorrectors: 2, nOuterCorrectors: 1, residualControl: '1e-4', residualControlByField: {} },
     relaxationFactors: { enabled: false, fields: { p: 0.3, T: 0.7 }, equations: { U: 0.7 } },
     adaptiveTimeStep: { enabled: false, maxCo: 1 },
     // V1.12 — buoyantSimpleFoam is steady + carries an energy field T.

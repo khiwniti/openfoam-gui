@@ -177,7 +177,7 @@ export function PatchPanel() {
     if (!Number.isFinite(n) || n <= 0) return;
     setSolverControl(formSolver, "numerics", {
       ...formValues.numerics,
-      residualControlByField: { ...cur, [field]: n },
+      residualControlByField: { ...cur, [field]: String(n) },
     });
   };
   // V1.11 — set or clear a single SIMPLE relaxation-factor
@@ -978,7 +978,7 @@ export function PatchPanel() {
                         if (!Number.isFinite(n) || n <= 0) return;
                         setSolverControl(formSolver, "numerics", {
                           ...formValues.numerics,
-                          residualControl: n,
+                          residualControl: String(n),
                         });
                       }}
                       title="Per-field residual tolerance applied to p, U, and (when RAS) k|epsilon|omega|nuTilda. Lower = stricter convergence."
@@ -2698,7 +2698,7 @@ function ConvergencePreview({
  */
 function ResidualOverrideRow(props: {
   field: string;
-  value: number | undefined;
+  value: string | undefined;
   onChange: (raw: string) => void;
   title?: string;
   // V1.30 -- accept the form outer-scope placeholder ("use residualControl")
@@ -2959,8 +2959,8 @@ function PerFieldOverrideSummary(props: {
     nNonOrthogonalCorrectors: number;
     nCorrectors: number;
     nOuterCorrectors: number;
-    residualControl: number;
-    residualControlByField: Record<string, number>;
+    residualControl: string;
+    residualControlByField: Record<string, string>;
   };
   solver: SolverControls["solver"];
   turbulence: SolverControls["turbulence"];
@@ -3478,7 +3478,7 @@ function NumericsPreview({
     nNonOrthogonalCorrectors: number;
     nCorrectors: number;
     nOuterCorrectors: number;
-    residualControl: number;
+    residualControl: string;
   };
   algorithm: "PIMPLE" | "PISO" | "SIMPLE";
 }) {
@@ -3486,7 +3486,12 @@ function NumericsPreview({
     `non-orth ${values.nNonOrthogonalCorrectors}`,
     algorithm !== "SIMPLE" ? `correctors ${values.nCorrectors}` : null,
     algorithm === "PIMPLE" ? `outer ${values.nOuterCorrectors}` : null,
-    algorithm === "SIMPLE" ? `residual ${values.residualControl.toExponential(1)}` : null,
+    // V1.49b -- residualControl is now a string after the V1.49 schema migration.
+    //  Render directly so the chip matches the canonical emit form ('1e-4')
+    //  instead of the previous Number().toExponential(1) wrapper which produced
+    //  '1.0e-4' (extra zero, cosmetic drift from data). maxInitialResidual
+    //  (line 2661) still uses toExponential(1) because it remains a Number.
+    algorithm === "SIMPLE" ? `residual ${values.residualControl}` : null,
   ]
     .filter(Boolean)
     .join(" · ");

@@ -51,11 +51,47 @@ divSchemes
     //  viscous accuracy, or back to `linear` for less diffusive
     //  behavior on coarse meshes, is now a one-click change.
     div(phi,U)      {{or schemes.fieldDivs.div_phi_U "Gauss linearUpwind"}} grad(U);
+    // V1.47 — wrap the 5 turbulence-model-specific div(phi,*) lines
+    //  (k, epsilon, omega, nuTilda, nut) in per-model eq-gates keyed on
+    //  `turbulence` so laminar cases don't reference non-existent
+    //  k/epsilon/omega/nuTilda/nut fields. Pre-V1.47 these lines emitted
+    //  unconditionally; OpenFOAM's laminar solver would emit "field <X>
+    //  not found" warnings on the fvSchemes preload and either short-
+    //  circuit the run or fail the field-consistency check at solver
+    //  start. The V1.46 buoyantSimpleFoam e2e test's inverse-assertion
+    //  checks (the k-turbulence divergence entry, plus parallel
+    //  epsilon / omega / nuTilda variants) caught this; the V1.47 fix
+    //  matches the gating pattern already established in laplacianSchemes
+    //  (V1.16) and snGradSchemes (V1.17). nut is a derived turbulent-
+    //  viscosity field present in all 3 RANS models — gate on the
+    //  (kEpsilon ∨ kOmegaSST ∨ SpalartAllmaras) disjunction.
+    {{#if (eq turbulence 'kEpsilon')}}
     div(phi,k)      {{or schemes.fieldDivs.div_phi_k "Gauss linearUpwind"}} grad(k);
     div(phi,epsilon) {{or schemes.fieldDivs.div_phi_epsilon "Gauss linearUpwind"}} grad(epsilon);
+    {{/if}}
+    {{#if (eq turbulence 'kOmegaSST')}}
+    div(phi,k)      {{or schemes.fieldDivs.div_phi_k "Gauss linearUpwind"}} grad(k);
     div(phi,omega)  {{or schemes.fieldDivs.div_phi_omega "Gauss linearUpwind"}} grad(omega);
-    div(phi,nut)    {{or schemes.fieldDivs.div_phi_nut "Gauss linearUpwind"}} grad(nut);
+    {{/if}}
+    {{#if (eq turbulence 'SpalartAllmaras')}}
     div(phi,nuTilda) {{or schemes.fieldDivs.div_phi_nuTilda "Gauss linearUpwind"}} grad(nuTilda);
+    {{/if}}
+    {{!-- V1.47 — nest the 3-way disjunction as `(or A (or B C))` rather
+              than `(or A B C)`. Handlebars' `or` sub-expression helper
+              registered in case.ts is 2-ary
+              (`registerHelper('or', (a, b) => a || b)`); a flat 3-ary
+              call would compile cleanly (Handlebars 4.x ignores extra
+              sub-expression args), but binding the 3rd arg to the helper's
+              `options` slot via the block-helper signature drops the
+              third comparison (C) — only `A || B` is computed. Nesting
+              2-ary `or` calls preserves `(A ∨ B ∨ C)` semantics across
+              the codebase's helper contract. (No parse-error risk: the
+              V1.47 SHIP-final-2 parse error originated from a stray
+              `{{#if}}` literal inside a C++ `//` comment, not from the
+              3-ary `or` form.) --}}
+    {{#if (or (eq turbulence 'kEpsilon') (or (eq turbulence 'kOmegaSST') (eq turbulence 'SpalartAllmaras')))}}
+    div(phi,nut)    {{or schemes.fieldDivs.div_phi_nut "Gauss linearUpwind"}} grad(nut);
+    {{/if}}
     {{!-- V1.14 — energy divergence; only emitted when the active
               solver carries an energy field T (buoyantSimpleFoam).
               OpenFOAM crashes on a missing-field divergence, so we

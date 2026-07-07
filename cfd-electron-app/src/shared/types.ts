@@ -244,6 +244,29 @@ export const SolverConfigsSchema = z.object({
 });
 export type SolverConfigs = z.infer<typeof SolverConfigsSchema>;
 
+// V1.49 DRY -- `zCoerceExponentialString` lifts the union-transform
+//  pattern (`z.union([z.number(), z.string()]).transform(...)`)
+//  into a named constant so the same transform hosts both
+//  `numerics.residualControl` and the per-record values in
+//  `numerics.residualControlByField`. The transform normalizes
+//  numeric inputs to scientific form -- e.g.
+//  `(1e-4).toExponential() === '1e-4'`, `(0.0001).toExponential()
+//  === '1e-4'` -- and passes through string inputs verbatim.
+//  This is the determinism invariant that the V1.47 dual-form
+//  regex `T\s+(?:1e-4|0\.0001)\s*;/` was band-aiding for; the
+//  V1.49 migration flips it from a regex band-aid to a single
+//  canonical emit form. Adding a third (or fourth) residual-style
+//  field? Append `zCoerceExponentialString` to its value schema
+//  and the normalization lift is automatic. Round-trip safety:
+//  `(x).toExponential()` always re-serializes to the same JS number
+//  via `Number(...)`, so downstream `String(...)`-coerced writes
+//  from the renderer resolve to identical OpenFOAM tokens regardless
+//  of whether the input form was `1e-4` (Number), `'1e-4'` (String),
+//  or `'0.0001'` (String).
+export const zCoerceExponentialString = z
+  .union([z.number(), z.string()])
+  .transform((v) => (typeof v === 'string' ? v : v.toExponential()));
+
 export const NumericsSchema = z.object({
   enabled: z.boolean().default(true),
   nNonOrthogonalCorrectors: z.number().int().min(0).default(0),
@@ -260,8 +283,14 @@ export const NumericsSchema = z.object({
    *  to this single value for every field it emits (p, U, and any
    *  turbulence / energy field the active solver+model implies).
    *  Backwards-compat: pre-V1.10 cases see `{}` here on load, which
-   *  causes the template to emit exactly the V1.9 shape verbatim. */
-  residualControl: z.number().positive().default(1e-4),/** V1.10 — per-field residual-tolerance override. Empty by
+   *  causes the template to emit exactly the V1.9 shape verbatim.
+   *
+   *  V1.49 — schema migrated from `z.number().positive().default(1e-4)`
+   *  to `zCoerceExponentialString.default('1e-4')`. Eliminates the
+   *  V1.47 dual-form regex band-aid `(?:1e-4|0\.0001)` by normalizing
+   *  numeric inputs to scientific form. See the `zCoerceExponentialString`
+   *  doc-comment for the round-trip safety argument. */
+  residualControl: zCoerceExponentialString.default('1e-4'),/** V1.10 — per-field residual-tolerance override. Empty by
  *  default; when populated, the template renders each listed
  *  field with the override's value instead of the uniform
  *  `numerics.residualControl`. Recognized keys:
@@ -276,9 +305,7 @@ export const NumericsSchema = z.object({
  *  turbulence model pair so the user can't accidentally type
  *  `omega` on a kEpsilon case and have it silently ignored by
  *  the template. */
-  residualControlByField: z
-    .record(z.string(), z.number().positive())
-    .default({}),
+  residualControlByField: z.record(z.string(), zCoerceExponentialString).default({}),
 });
 
 /**
@@ -1046,7 +1073,7 @@ export const DomainSchema = z.object({
     nNonOrthogonalCorrectors: 0,
     nCorrectors: 2,
     nOuterCorrectors: 1,
-    residualControl: 1e-4,
+    residualControl: '1e-4',
   }),
   // V1.12 — fvSchemes defaults. Lives on the Domain so it roundtrips
   //  through .cfd-app-state.json and reaches the fvSchemes template
@@ -1358,7 +1385,7 @@ export const SolverControlsSchema = z.object({
     nNonOrthogonalCorrectors: 0,
     nCorrectors: 2,
     nOuterCorrectors: 1,
-    residualControl: 1e-4,
+    residualControl: '1e-4',
   }),
   /** V1.11 — SIMPLE relaxation-factor overrides, per-solver. Same
    *  pattern as V1.9 numerics: lives on SolverControlsSchema as the

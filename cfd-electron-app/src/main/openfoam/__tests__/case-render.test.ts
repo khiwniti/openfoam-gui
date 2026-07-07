@@ -98,7 +98,7 @@ function minimalDomain(): import('@shared/types').Domain {
       nNonOrthogonalCorrectors: 0,
       nCorrectors: 2,
       nOuterCorrectors: 1,
-      residualControl: 1e-4,
+      residualControl: '1e-4',
       residualControlByField: {},
     },
     schemes: {

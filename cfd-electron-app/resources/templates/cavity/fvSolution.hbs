@@ -82,7 +82,18 @@ PISO
     pRefValue       0;
 }
 {{/if}}
-{{#if (eq solver 'simpleFoam')}}
+{{!-- V1.47 — widen SIMPLE-block gate from `(eq solver 'simpleFoam')` to
+     the SIMPLE-family check so buoyantSimpleFoam (and future potentialFoam)
+     also render the SIMPLE block. Pre-V1.47 the SIMPLE block was gated on
+     the literal solver string, which left buoyantSimpleFoam rendering
+     WITHOUT nNonOrthogonalCorrectors, residualControl.p/U, and the
+     nested T-residualControl line (`{{#if (eq solver 'buoyantSimpleFoam')}}`
+     is INSIDE this gate — it wouldn't fire either). The result would
+     crash OpenFOAM at first read of system/fvSolution.
+     V1.46's buoyantSimpleFoam e2e it-case caught this gap; V1.47 fixes
+     it. (Note: `or` block-helper is already used in the codebase via
+     fvSchemes.hbs and partials.hbs, so no helper-registration needed.) --}}
+{{#if (or (eq solver 'simpleFoam') (eq solver 'buoyantSimpleFoam'))}}
 SIMPLE
 {
     nNonOrthogonalCorrectors {{numerics.nNonOrthogonalCorrectors}};
